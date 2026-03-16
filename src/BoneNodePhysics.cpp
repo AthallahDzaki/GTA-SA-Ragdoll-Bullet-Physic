@@ -1,4 +1,5 @@
 #include "BoneNodePhysics.h"
+#include "BoneHelper.h"
 #include "CPed.h"
 #include "CMatrix.h"
 #include "rwcore.h"
@@ -195,80 +196,178 @@ void BoneNodePhysics::CreateConstraintsForPed(CPed* ped) {
         return nullptr;
     };
 
-    struct JointDef {
-        int parentTag;
-        int childTag;
-        // Cone-twist limits (in radians): swing1, swing2, twist
-        float swing1, swing2, twist;
-    };
+    // OpenGL demo body-part mapping -> GTA SA bones (test mode)
+    auto* pelvis         = findBone(BONE_PELVIS);         // BODYPART_PELVIS
+    auto* spine          = findBone(BONE_UPPERTORSO);     // BODYPART_SPINE
+    auto* head           = findBone(BONE_HEAD);           // BODYPART_HEAD
+    auto* leftShoulder   = findBone(BONE_LEFTSHOULDER);   // BODYPART_LEFT_UPPER_ARM
+    auto* leftElbow      = findBone(BONE_LEFTELBOW);      // BODYPART_LEFT_LOWER_ARM
+    auto* rightShoulder  = findBone(BONE_RIGHTSHOULDER);  // BODYPART_RIGHT_UPPER_ARM
+    auto* rightElbow     = findBone(BONE_RIGHTELBOW);     // BODYPART_RIGHT_LOWER_ARM
+    auto* leftHip        = findBone(BONE_LEFTHIP);        // BODYPART_LEFT_UPPER_LEG
+    auto* leftKnee       = findBone(BONE_LEFTKNEE);       // BODYPART_LEFT_LOWER_LEG
+    auto* rightHip       = findBone(BONE_RIGHTHIP);       // BODYPART_RIGHT_UPPER_LEG
+    auto* rightKnee      = findBone(BONE_RIGHTKNEE);      // BODYPART_RIGHT_LOWER_LEG
 
-    static const JointDef joints[] = {
-        // Spine chain
-        {BONE_PELVIS,      BONE_SPINE1,        0.30f, 0.20f, 0.20f},
-        {BONE_SPINE1,      BONE_UPPERTORSO,    0.30f, 0.20f, 0.20f},
-        {BONE_UPPERTORSO,  BONE_NECK,          0.30f, 0.25f, 0.20f},
-        {BONE_NECK,        BONE_HEAD,          0.40f, 0.40f, 0.15f},
-
-        // Right arm
-        {BONE_UPPERTORSO,  BONE_RIGHTSHOULDER, 1.40f, 1.00f, 0.50f},
-        {BONE_RIGHTSHOULDER, BONE_RIGHTELBOW,  1.30f, 0.20f, 0.20f},
-        {BONE_RIGHTELBOW,  BONE_RIGHTWRIST,    1.20f, 0.15f, 0.30f},
-        {BONE_RIGHTWRIST,  BONE_RIGHTHAND,     0.50f, 0.40f, 0.20f},
-
-        // Left arm
-        {BONE_UPPERTORSO,  BONE_LEFTSHOULDER,  1.40f, 1.00f, 0.50f},
-        {BONE_LEFTSHOULDER, BONE_LEFTELBOW,    1.30f, 0.20f, 0.20f},
-        {BONE_LEFTELBOW,   BONE_LEFTWRIST,     1.20f, 0.15f, 0.30f},
-        {BONE_LEFTWRIST,   BONE_LEFTHAND,      0.50f, 0.40f, 0.20f},
-
-        // Right leg
-        {BONE_PELVIS,      BONE_RIGHTHIP,      0.80f, 0.60f, 0.30f},
-        {BONE_RIGHTHIP,    BONE_RIGHTKNEE,     1.50f, 0.10f, 0.10f},
-        {BONE_RIGHTKNEE,   BONE_RIGHTANKLE,    0.60f, 0.10f, 0.10f},
-        {BONE_RIGHTANKLE,  BONE_RIGHTFOOT,     0.40f, 0.30f, 0.15f},
-
-        // Left leg
-        {BONE_PELVIS,      BONE_LEFTHIP,       0.80f, 0.60f, 0.30f},
-        {BONE_LEFTHIP,     BONE_LEFTKNEE,      1.50f, 0.10f, 0.10f},
-        {BONE_LEFTKNEE,    BONE_LEFTANKLE,     0.60f, 0.10f, 0.10f},
-        {BONE_LEFTANKLE,   BONE_LEFTFOOT,      0.40f, 0.30f, 0.15f},
-    };
-
-    int created = 0;
-    for (const auto& j : joints) {
-        auto* parent = findBone(j.parentTag);
-        auto* child  = findBone(j.childTag);
-        if (!parent || !child || !parent->rigidBody || !child->rigidBody) continue;
-
-        // ---- Compute pivot offsets from current world transforms ----
-        // The pivot point is the child's world origin expressed in:
-        //   parentFrame — local space of parent body
-        //   childFrame  — local space of child body (identity = child origin)
-        btTransform parentWorldTF = parent->rigidBody->getWorldTransform();
-        btTransform childWorldTF  = child->rigidBody->getWorldTransform();
-
-        // Pivot is at the child's centre of mass (its world origin)
-        // expressed relative to parent's local frame:
-        btTransform parentFrame = parentWorldTF.inverse() * childWorldTF;
-        btTransform childFrame;
-        childFrame.setIdentity();   // pivot is exactly at child's CoM
-
-        auto* ct = new btConeTwistConstraint(
-            *parent->rigidBody, *child->rigidBody,
-            parentFrame, childFrame
-        );
-        ct->setLimit(j.swing1, j.swing2, j.twist,
-                     0.9f,   // softness
-                     0.3f,   // bias factor
-                     1.0f);  // relaxation factor
-
-        s_DynamicsWorld->addConstraint(ct, true);   // true = disable self-collision
-        child->constraint = ct;
-        created++;
+    if (!pelvis || !spine || !head) {
+        DebugLog("CreateConstraintsForPed: missing mapped GTA bones (pelvis/spine/head)");
+        return;
     }
 
-    char buf[128];
-    sprintf_s(buf, "Created %d cone-twist constraints", created);
+    btScalar scale = 1.0f;
+    if (pelvis->rigidBody && spine->rigidBody) {
+        btVector3 p = pelvis->rigidBody->getWorldTransform().getOrigin();
+        btVector3 s = spine->rigidBody->getWorldTransform().getOrigin();
+        btScalar dist = (s - p).length();
+        if (dist > SIMD_EPSILON) {
+            scale = btClamped(dist / btScalar(0.20f), btScalar(0.6f), btScalar(2.5f));
+        }
+    }
+
+    auto addJoint = [&](BonePhysicsData* a, BonePhysicsData* b,
+                        const btVector3& aOrigin, const btVector3& bOrigin,
+                        const btVector3& aEulerZYX, const btVector3& bEulerZYX,
+                        const btVector3& angularLower, const btVector3& angularUpper) -> bool {
+        if (!a || !b || !a->rigidBody || !b->rigidBody) return false;
+
+        btTransform localA, localB;
+        localA.setIdentity();
+        localB.setIdentity();
+
+        localA.getBasis().setEulerZYX(aEulerZYX.x(), aEulerZYX.y(), aEulerZYX.z());
+        localB.getBasis().setEulerZYX(bEulerZYX.x(), bEulerZYX.y(), bEulerZYX.z());
+
+        localA.setOrigin(aOrigin * scale);
+        localB.setOrigin(bOrigin * scale);
+
+        auto* joint6DOF = new btGeneric6DofConstraint(
+            *a->rigidBody, *b->rigidBody, localA, localB, true);
+
+        joint6DOF->setLinearLowerLimit(btVector3(0.0f, 0.0f, 0.0f));
+        joint6DOF->setLinearUpperLimit(btVector3(0.0f, 0.0f, 0.0f));
+        joint6DOF->setAngularLowerLimit(angularLower);
+        joint6DOF->setAngularUpperLimit(angularUpper);
+
+        s_DynamicsWorld->addConstraint(joint6DOF, true);
+        b->constraint = joint6DOF;
+        return true;
+    };
+
+    constexpr btScalar eps = SIMD_EPSILON;
+    int created = 0;
+
+    // SPINE -> HEAD
+    if (addJoint(spine, head,
+                 btVector3(0.0f, 0.30f, 0.0f),
+                 btVector3(0.0f,-0.14f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(-SIMD_PI * 0.3f, -eps, -SIMD_PI * 0.3f),
+                 btVector3( SIMD_PI * 0.5f,  eps,  SIMD_PI * 0.3f))) {
+        ++created;
+    }
+
+    // LEFT SHOULDER
+    if (addJoint(spine, leftShoulder,
+                 btVector3(-0.2f, 0.15f, 0.0f),
+                 btVector3( 0.0f,-0.18f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(SIMD_HALF_PI, 0.0f, -SIMD_HALF_PI),
+                 btVector3(-SIMD_PI * 0.8f, -eps, -SIMD_PI * 0.5f),
+                 btVector3( SIMD_PI * 0.8f,  eps,  SIMD_PI * 0.5f))) {
+        ++created;
+    }
+
+    // RIGHT SHOULDER
+    if (addJoint(spine, rightShoulder,
+                 btVector3( 0.2f, 0.15f, 0.0f),
+                 btVector3( 0.0f,-0.18f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(0.0f, 0.0f, SIMD_HALF_PI),
+                 btVector3(-SIMD_PI * 0.8f, -eps, -SIMD_PI * 0.5f),
+                 btVector3( SIMD_PI * 0.8f,  eps,  SIMD_PI * 0.5f))) {
+        ++created;
+    }
+
+    // LEFT ELBOW
+    if (addJoint(leftShoulder, leftElbow,
+                 btVector3(0.0f, 0.18f, 0.0f),
+                 btVector3(0.0f,-0.14f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(-eps, -eps, -eps),
+                 btVector3(SIMD_PI * 0.7f, eps, eps))) {
+        ++created;
+    }
+
+    // RIGHT ELBOW
+    if (addJoint(rightShoulder, rightElbow,
+                 btVector3(0.0f, 0.18f, 0.0f),
+                 btVector3(0.0f,-0.14f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(-eps, -eps, -eps),
+                 btVector3(SIMD_PI * 0.7f, eps, eps))) {
+        ++created;
+    }
+
+    // PELVIS -> SPINE
+    if (addJoint(pelvis, spine,
+                 btVector3(0.0f, 0.15f, 0.0f),
+                 btVector3(0.0f,-0.15f, 0.0f),
+                 btVector3(0.0f, SIMD_HALF_PI, 0.0f),
+                 btVector3(0.0f, SIMD_HALF_PI, 0.0f),
+                 btVector3(-SIMD_PI * 0.2f, -eps, -SIMD_PI * 0.3f),
+                 btVector3( SIMD_PI * 0.2f,  eps,  SIMD_PI * 0.6f))) {
+        ++created;
+    }
+
+    // LEFT HIP
+    if (addJoint(pelvis, leftHip,
+                 btVector3(-0.18f,-0.10f, 0.0f),
+                 btVector3( 0.0f, 0.225f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(-SIMD_HALF_PI * 0.5f, -eps, -eps),
+                 btVector3( SIMD_HALF_PI * 0.8f,  eps,  SIMD_HALF_PI * 0.6f))) {
+        ++created;
+    }
+
+    // RIGHT HIP
+    if (addJoint(pelvis, rightHip,
+                 btVector3( 0.18f,-0.10f, 0.0f),
+                 btVector3( 0.0f, 0.225f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(-SIMD_HALF_PI * 0.5f, -eps, -SIMD_HALF_PI * 0.6f),
+                 btVector3( SIMD_HALF_PI * 0.8f,  eps,  eps))) {
+        ++created;
+    }
+
+    // LEFT KNEE
+    if (addJoint(leftHip, leftKnee,
+                 btVector3(0.0f,-0.225f,0.0f),
+                 btVector3(0.0f, 0.185f,0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(-eps, -eps, -eps),
+                 btVector3(SIMD_PI * 0.7f, eps, eps))) {
+        ++created;
+    }
+
+    // RIGHT KNEE
+    if (addJoint(rightHip, rightKnee,
+                 btVector3(0.0f,-0.225f,0.0f),
+                 btVector3(0.0f, 0.185f,0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(-eps, -eps, -eps),
+                 btVector3(SIMD_PI * 0.7f, eps, eps))) {
+        ++created;
+    }
+
+    char buf[160];
+    sprintf_s(buf, "Created %d fake 6DoF constraints (OpenGL demo style), scale=%.2f", created, (float)scale);
     DebugLog(buf);
 }
 
@@ -466,6 +565,10 @@ void BoneNodePhysics::SyncAllFromBullet() {
     }
 }
 
+void BoneNodePhysics::SyncBulletToBoneHelperRender(CPed* ped) {
+    (void)ped;
+}
+
 // ============================================================
 //  WriteBulletMatricesToHierarchy
 //  Called from pedRenderEvent.before — overwrites GTA skinning
@@ -543,10 +646,66 @@ static void DrawLineD3D9(IDirect3DDevice9* dev, float x1, float y1,
 
     dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
     dev->SetTexture(0, nullptr);
+    dev->SetVertexShader(nullptr);
     dev->SetPixelShader(nullptr);
+    dev->SetRenderState(D3DRS_ZENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
     dev->SetRenderState(D3DRS_ANTIALIASEDLINEENABLE, TRUE);
     dev->DrawPrimitiveUP(D3DPT_LINELIST, 1, verts, sizeof(D3DLVERTEX));
     dev->SetRenderState(D3DRS_ANTIALIASEDLINEENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    dev->SetRenderState(D3DRS_ZENABLE, TRUE);
+}
+
+static void DrawCircleD3D9(IDirect3DDevice9* dev, float cx, float cy,
+                           float radius, D3DCOLOR color, int segments = 20) {
+    if (radius < 1.0f) radius = 1.0f;
+    if (segments < 8) segments = 8;
+
+    const float step = (SIMD_2_PI) / (float)segments;
+    float prevX = cx + std::cos(0.0f) * radius;
+    float prevY = cy + std::sin(0.0f) * radius;
+
+    for (int i = 1; i <= segments; ++i) {
+        float a = step * (float)i;
+        float x = cx + std::cos(a) * radius;
+        float y = cy + std::sin(a) * radius;
+        DrawLineD3D9(dev, prevX, prevY, x, y, 1.0f, color);
+        prevX = x;
+        prevY = y;
+    }
+}
+
+static D3DCOLOR GetBoneDebugColor(int boneTag) {
+    // Head = Red
+    if (boneTag == BONE_HEAD || boneTag == BONE_HEAD1 || boneTag == BONE_HEAD2 || boneTag == BONE_NECK)
+        return D3DCOLOR_ARGB(255, 255, 70, 70);
+
+    // Spine/Torso = Green
+    if (boneTag == BONE_PELVIS || boneTag == BONE_PELVIS1 ||
+        boneTag == BONE_SPINE1 || boneTag == BONE_UPPERTORSO)
+        return D3DCOLOR_ARGB(255, 80, 255, 80);
+
+    // Arms = Cyan
+    if (boneTag == BONE_RIGHTSHOULDER || boneTag == BONE_RIGHTELBOW ||
+        boneTag == BONE_RIGHTWRIST || boneTag == BONE_RIGHTHAND ||
+        boneTag == BONE_LEFTSHOULDER || boneTag == BONE_LEFTELBOW ||
+        boneTag == BONE_LEFTWRIST || boneTag == BONE_LEFTHAND)
+        return D3DCOLOR_ARGB(255, 0, 255, 255);
+
+    // Legs = Yellow
+    if (boneTag == BONE_RIGHTHIP || boneTag == BONE_RIGHTKNEE ||
+        boneTag == BONE_RIGHTANKLE || boneTag == BONE_RIGHTFOOT ||
+        boneTag == BONE_LEFTHIP || boneTag == BONE_LEFTKNEE ||
+        boneTag == BONE_LEFTANKLE || boneTag == BONE_LEFTFOOT)
+        return D3DCOLOR_ARGB(255, 255, 230, 0);
+
+    // Fallback = White
+    return D3DCOLOR_ARGB(255, 255, 255, 255);
 }
 
 // ============================================================
@@ -559,6 +718,22 @@ void BoneNodePhysics::DrawDebugBoneLines() {
     auto* dev = static_cast<IDirect3DDevice9*>(RwD3D9GetCurrentD3DDevice());
     if (!dev) return;
 
+    struct DebugLink { int parentTag; int childTag; };
+    static const DebugLink kMappedLinks[] = {
+        // OpenGL demo mapping (10 joints): pelvis-spine, spine-head,
+        // spine-shoulders, shoulders-elbows, pelvis-hips, hips-knees.
+        {BONE_PELVIS,        BONE_UPPERTORSO},
+        {BONE_UPPERTORSO,    BONE_HEAD},
+        {BONE_UPPERTORSO,    BONE_LEFTSHOULDER},
+        {BONE_UPPERTORSO,    BONE_RIGHTSHOULDER},
+        {BONE_LEFTSHOULDER,  BONE_LEFTELBOW},
+        {BONE_RIGHTSHOULDER, BONE_RIGHTELBOW},
+        {BONE_PELVIS,        BONE_LEFTHIP},
+        {BONE_PELVIS,        BONE_RIGHTHIP},
+        {BONE_LEFTHIP,       BONE_LEFTKNEE},
+        {BONE_RIGHTHIP,      BONE_RIGHTKNEE},
+    };
+
     for (auto& [ped, bones] : s_PedBones) {
         if (!ped) continue;
 
@@ -568,14 +743,26 @@ void BoneNodePhysics::DrawDebugBoneLines() {
             return nullptr;
         };
 
-        for (auto& b : bones) {
-            if (!b->isActive || !b->rigidBody) continue;
-            if (b->parentTag < 0) continue;  // root has no parent line
+        // Draw head marker (circle) so it's easy to identify.
+        if (auto* head = findBone(BONE_HEAD); head && head->isActive && head->rigidBody) {
+            btVector3 headBt = head->rigidBody->getWorldTransform().getOrigin();
+            RwV3d headWp = {headBt.x(), headBt.y(), headBt.z()};
+            RwV3d headSp = {0};
+            float headW = 0.0f, headH = 0.0f;
+            if (CSprite::CalcScreenCoors(headWp, &headSp, &headW, &headH, true, true)) {
+                float radius = std::clamp(headH * 0.18f, 5.0f, 28.0f);
+                DrawCircleD3D9(dev, headSp.x, headSp.y, radius, D3DCOLOR_ARGB(255, 255, 60, 60), 24);
+            }
+        }
 
-            auto* parent = findBone(b->parentTag);
-            if (!parent || !parent->rigidBody) continue;
+        for (const auto& link : kMappedLinks) {
+            auto* parent = findBone(link.parentTag);
+            auto* child  = findBone(link.childTag);
+            if (!parent || !child) continue;
+            if (!parent->isActive || !child->isActive) continue;
+            if (!parent->rigidBody || !child->rigidBody) continue;
 
-            btVector3 childBt  = b->rigidBody->getWorldTransform().getOrigin();
+            btVector3 childBt  = child->rigidBody->getWorldTransform().getOrigin();
             btVector3 parentBt = parent->rigidBody->getWorldTransform().getOrigin();
 
             // Convert Bullet world positions to RwV3d
@@ -588,18 +775,7 @@ void BoneNodePhysics::DrawDebugBoneLines() {
             if (!CSprite::CalcScreenCoors(wp1, &sp1, &w, &h, true, true)) continue;
             if (!CSprite::CalcScreenCoors(wp2, &sp2, &w, &h, true, true)) continue;
 
-            // Green for spine/torso, Cyan for limbs
-            D3DCOLOR color = D3DCOLOR_ARGB(255, 0, 255, 0);  // green
-            if (b->boneTag == BONE_RIGHTSHOULDER || b->boneTag == BONE_RIGHTELBOW ||
-                b->boneTag == BONE_RIGHTWRIST || b->boneTag == BONE_RIGHTHAND ||
-                b->boneTag == BONE_LEFTSHOULDER || b->boneTag == BONE_LEFTELBOW ||
-                b->boneTag == BONE_LEFTWRIST || b->boneTag == BONE_LEFTHAND ||
-                b->boneTag == BONE_RIGHTHIP || b->boneTag == BONE_RIGHTKNEE ||
-                b->boneTag == BONE_RIGHTANKLE || b->boneTag == BONE_RIGHTFOOT ||
-                b->boneTag == BONE_LEFTHIP || b->boneTag == BONE_LEFTKNEE ||
-                b->boneTag == BONE_LEFTANKLE || b->boneTag == BONE_LEFTFOOT) {
-                color = D3DCOLOR_ARGB(255, 0, 255, 255);  // cyan
-            }
+            D3DCOLOR color = GetBoneDebugColor(link.childTag);
 
             DrawLineD3D9(dev, sp1.x, sp1.y, sp2.x, sp2.y, 1.0f, color);
         }

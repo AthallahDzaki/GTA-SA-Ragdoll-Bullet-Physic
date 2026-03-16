@@ -51,6 +51,7 @@ public:
 
     static void SyncAllToBullet(CPed* ped);
     static void SyncAllFromBullet();
+    static void SyncBulletToBoneHelperRender(CPed* ped);
 
     static void RegisterHierarchy(CPed* ped, RpHAnimHierarchy* hier);
 

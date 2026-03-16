@@ -365,7 +365,7 @@ void UpdateRagdollPeds() {
         ped->m_vecMoveSpeed = CVector(0, 0, 0);
         ped->m_vecTurnSpeed = CVector(0, 0, 0);
         ped->bUpdateAnimHeading = false;
-        ped->bDontRender = false;  // show the actual ped mesh
+        ped->bDontRender = true;  // wireframe only (hide GTA ped mesh)
 
         if (ped->m_pIntelligence)
             ped->m_pIntelligence->ClearTasks(false, false);
@@ -769,11 +769,9 @@ public:
         // NOT in drawAfterFadeEvent alongside CFont, or it corrupts text.
         Events::drawingEvent += []{ BoneNodePhysics::DrawDebugBoneLines(); };
 
-        // Two-hook strategy to override GTA's bone animation:
-        //  .before: write Bullet matrices + clear update flags (GTA's UpdateMatrices = no-op)
-        //  .after:  restore flags so next frame's anim blend can write normally
-        Events::pedRenderEvent.before += OnBeforePedRender;
-        Events::pedRenderEvent.after  += OnAfterPedRender;
+        // Disable custom bone drawing in favor of BoneHelper
+        // Legacy GTA/BoneHelper bone override path is intentionally disabled.
+        // Wireframe ragdoll is rendered only via DrawDebugBoneLines().
 
         Events::shutdownRwEvent    += CleanupBulletWorld;
         Events::pedDtorEvent       += OnPedDestroyed;

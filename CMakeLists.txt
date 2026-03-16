@@ -84,6 +84,7 @@ FetchContent_MakeAvailable(minhook)
 add_library(${PROJECT_NAME} SHARED
     src/main.cpp
     src/BoneNodePhysics.cpp
+    src/BoneHelper.cpp
 )
 
 # Include directories
