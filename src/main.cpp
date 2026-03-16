@@ -14,10 +14,12 @@
 #include "rphanim.h"
 #include "rpskin.h"
 #include "BoneNodePhysics.h"
+#include "BoneHelper.h"
 #include "CFont.h"
 #include "extensions/FontPrint.h"
 #include "extensions/KeyCheck.h"
 #include "ePedBones.h"
+#include "CSprite.h"
 
 #include <btBulletDynamicsCommon.h>
 #include <unordered_map>
@@ -90,7 +92,107 @@ bool  g_PhysicsShutdown     = false;  // set TRUE before deleting any Bullet obj
 int   g_FrameCounter        = 0;
 int   g_WorldCollisionCount = 0;
 
+static bool g_DebugBoneNames = false;
+
 std::unordered_set<CPed*> g_RagdollPeds;
+
+struct DebugBoneName {
+    int id;
+    const char* name;
+};
+
+static const DebugBoneName kDebugBoneNames[] = {
+    {0,    "Root"},
+    {1,    "Pelvis"},
+    {2,    "Spine"},
+    {3,    "Spine1"},
+    {4,    "Neck"},
+    {5,    "Head"},
+    {6,    "L Brow"},
+    {7,    "R Brow"},
+    {8,    "Jaw"},
+    {21,   "Bip01 R Clavicle"},
+    {22,   "R UpperArm"},
+    {23,   "R ForeArm"},
+    {24,   "R Hand"},
+    {25,   "R Finger"},
+    {26,   "R Finger01"},
+    {28,   "RThumb1"},
+    {29,   "RThumb2"},
+    {30,   "llip11"},
+    {31,   "Bip01 L Clavicle"},
+    {32,   "L UpperArm"},
+    {33,   "L ForeArm"},
+    {34,   "L Hand"},
+    {35,   "L Finger"},
+    {36,   "L Finger01"},
+    {38,   "LThumb1"},
+    {39,   "LThumb2"},
+    {40,   "jaw22"},
+    {41,   "L Thigh"},
+    {42,   "L Calf"},
+    {43,   "L Foot"},
+    {44,   "L Toe0"},
+    {51,   "R Thigh"},
+    {52,   "R Calf"},
+    {53,   "R Foot"},
+    {54,   "R Toe0"},
+    {201,  "Belly"},
+    {301,  "R breast"},
+    {302,  "L breast"},
+    {303,  "HeadNub"},
+    {304,  "L Finger0Nub"},
+    {305,  "R Finger0Nub"},
+    {306,  "L Toe0Nub"},
+    {307,  "R Toe0Nub"},
+    {5001, "rbrow1"},
+    {5002, "rbrow2"},
+    {5003, "lbrow2"},
+    {5004, "lbrow1"},
+    {5005, "rlid"},
+    {5006, "llid"},
+    {5007, "rtlip3"},
+    {5008, "ltlip3"},
+    {5009, "rtlip1"},
+    {5010, "rtlip2"},
+    {5011, "ltlip1"},
+    {5012, "ltlip2"},
+    {5013, "rcorner"},
+    {5014, "lcorner"},
+    {5015, "jaw1"},
+    {5016, "jaw2"},
+    {5017, "llip1"},
+    {5018, "reye"},
+    {5019, "leye"},
+    {5020, "rcheek"},
+    {5021, "lcheek"}
+};
+
+static void DrawDebugBoneNamesForPed(CPed* ped) {
+    if (!ped || !ped->m_pRwClump) return;
+
+    CFont::SetBackground(false, false);
+    CFont::SetScale(0.28f, 0.55f);
+    CFont::SetOrientation(eFontAlignment::ALIGN_LEFT);
+    CFont::SetColor(CRGBA(255, 255, 255, 200));
+    CFont::SetDropShadowPosition(1);
+    CFont::SetEdge(1);
+    CFont::SetProportional(true);
+    CFont::SetFontStyle(eFontStyle::FONT_SUBTITLES);
+
+    for (const auto& entry : kDebugBoneNames) {
+        if (!BoneHelper::IsValidBone(ped, entry.id)) continue;
+
+        RwV3d wp = BoneHelper::GetBonePosition(ped, entry.id);
+        RwV3d sp = {0};
+        float w = 0.0f, h = 0.0f;
+        if (!CSprite::CalcScreenCoors(wp, &sp, &w, &h, true, true)) continue;
+
+        char buf[96];
+        sprintf_s(buf, "%d %s", entry.id, entry.name);
+        CFont::PrintString(sp.x + 6.0f, sp.y, buf);
+    }
+}
 
 // ============ DRAG SYSTEM STATE ============
 // Velocity-based drag: each frame we push the dragged body toward a target point.
@@ -153,35 +255,37 @@ static void CleanupGroundPlanes() {
 
 // ============ RAGDOLL CREATION ============
 //
-// Bone chain definition: each entry is { boneTag, boneParentTag }
-// parentTag = -1 means this is a root bone (pelvis)
-struct BoneEntry { int tag; int parentTag; };
-static const BoneEntry g_BoneChain[] = {
-    {BONE_PELVIS,       -1},
-    {BONE_SPINE1,       BONE_PELVIS},
-    {BONE_UPPERTORSO,   BONE_SPINE1},
-    {BONE_NECK,         BONE_UPPERTORSO},
-    {BONE_HEAD,         BONE_NECK},
+// Bone chain definition: each entry is { parentTag, childTag }
+// parentTag = -1 means this is a root bone
+struct BoneLink { int parentTag; int childTag; };
+static const BoneLink g_BoneChain[] = {
+    {-1,               BONE_PELVIS1},
 
-    {BONE_RIGHTSHOULDER,BONE_UPPERTORSO},
-    {BONE_RIGHTELBOW,   BONE_RIGHTSHOULDER},
-    {BONE_RIGHTWRIST,   BONE_RIGHTELBOW},
-    {BONE_RIGHTHAND,    BONE_RIGHTWRIST},
+    {BONE_PELVIS1,      BONE_PELVIS},
+    {BONE_PELVIS,       BONE_SPINE1},
+    {BONE_SPINE1,       BONE_UPPERTORSO},
+    {BONE_UPPERTORSO,   BONE_NECK},
+    {BONE_NECK,         BONE_HEAD},
 
-    {BONE_LEFTSHOULDER, BONE_UPPERTORSO},
-    {BONE_LEFTELBOW,    BONE_LEFTSHOULDER},
-    {BONE_LEFTWRIST,    BONE_LEFTELBOW},
-    {BONE_LEFTHAND,     BONE_LEFTWRIST},
+    {BONE_UPPERTORSO,   BONE_LEFTSHOULDER},
+    {BONE_LEFTSHOULDER, BONE_LEFTELBOW},
+    {BONE_LEFTELBOW,    BONE_LEFTWRIST},
+    {BONE_LEFTWRIST,    BONE_LEFTHAND},
 
-    {BONE_RIGHTHIP,     BONE_PELVIS},
-    {BONE_RIGHTKNEE,    BONE_RIGHTHIP},
-    {BONE_RIGHTANKLE,   BONE_RIGHTKNEE},
-    {BONE_RIGHTFOOT,    BONE_RIGHTANKLE},
+    {BONE_UPPERTORSO,   BONE_RIGHTSHOULDER},
+    {BONE_RIGHTSHOULDER,BONE_RIGHTELBOW},
+    {BONE_RIGHTELBOW,   BONE_RIGHTWRIST},
+    {BONE_RIGHTWRIST,   BONE_RIGHTHAND},
 
-    {BONE_LEFTHIP,      BONE_PELVIS},
-    {BONE_LEFTKNEE,     BONE_LEFTHIP},
-    {BONE_LEFTANKLE,    BONE_LEFTKNEE},
-    {BONE_LEFTFOOT,     BONE_LEFTANKLE},
+    {BONE_PELVIS,       BONE_LEFTHIP},
+    {BONE_LEFTHIP,      BONE_LEFTKNEE},
+    {BONE_LEFTKNEE,     BONE_LEFTANKLE},
+    {BONE_LEFTANKLE,    BONE_LEFTFOOT},
+
+    {BONE_PELVIS,       BONE_RIGHTHIP},
+    {BONE_RIGHTHIP,     BONE_RIGHTKNEE},
+    {BONE_RIGHTKNEE,    BONE_RIGHTANKLE},
+    {BONE_RIGHTANKLE,   BONE_RIGHTFOOT},
 };
 
 void CreateBulletRagdollForPed(CPed* ped) {
@@ -205,10 +309,10 @@ void CreateBulletRagdollForPed(CPed* ped) {
 
     int created = 0;
     for (const auto& entry : g_BoneChain) {
-        int boneIndex = RpHAnimIDGetIndex(hier, entry.tag);
+        int boneIndex = RpHAnimIDGetIndex(hier, entry.childTag);
         if (boneIndex < 0) continue;
 
-        if (BoneNodePhysics::CreatePhysicsForPedBone(ped, entry.tag, boneIndex, entry.parentTag))
+        if (BoneNodePhysics::CreatePhysicsForPedBone(ped, entry.childTag, boneIndex, entry.parentTag))
             ++created;
     }
 
@@ -361,11 +465,11 @@ void UpdateRagdollPeds() {
         if (!ped) continue;
 
         // Suppress GTA's own physics and AI
-        ped->SkipPhysics();
+        // ped->SkipPhysics();
+        ped->bDontUpdateHierarchy = true;
         ped->m_vecMoveSpeed = CVector(0, 0, 0);
         ped->m_vecTurnSpeed = CVector(0, 0, 0);
         ped->bUpdateAnimHeading = false;
-        ped->bDontRender = true;  // wireframe only (hide GTA ped mesh)
 
         if (ped->m_pIntelligence)
             ped->m_pIntelligence->ClearTasks(false, false);
@@ -375,56 +479,6 @@ void UpdateRagdollPeds() {
         ped->bStreamingDontDelete = true;
         ped->bImBeingRendered     = true;
     }
-}
-
-// ============ RENDER HOOK: write Bullet matrices then freeze hierarchy update ============
-//
-// Strategy for preventing GTA from overwriting our Bullet matrices:
-//  1. (.before) Write Bullet world-space transforms into hierarchy matrix array.
-//  2. (.before) CLEAR rpHANIMHIERARCHYUPDATELTMS + UPDATE_MODELLING flags.
-//             GTA calls RpHAnimHierarchyUpdateMatrices INSIDE the render chain,
-//             but it checks these flags first — cleared → no-op → our matrices survive.
-//  3. (.after)  RESTORE the flags so next frame's animation blend can write normally
-//             (we'll override again in .before before render).
-
-static constexpr RpHAnimHierarchyFlag kUpdateFlags =
-    (RpHAnimHierarchyFlag)(rpHANIMHIERARCHYUPDATELTMS | rpHANIMHIERARCHYUPDATEMODELLINGMATRICES);
-
-void OnBeforePedRender(CPed* ped) {
-    if (!ped || g_RagdollPeds.find(ped) == g_RagdollPeds.end()) return;
-    if (!ped->m_pRwClump) return;
-
-    RpHAnimHierarchy* hier = GetAnimHierarchyFromSkinClump(ped->m_pRwClump);
-    if (!hier) return;
-
-    RwMatrix* matrices = RpHAnimHierarchyGetMatrixArray(hier);
-    if (!matrices) return;
-
-    // Step 1: Force GTA to update ALL hierarchy matrices from animation NOW
-    // (so non-Bullet bones like fingers get correct positions from animation)
-    RpHAnimHierarchyFlag curFlags = RpHAnimHierarchyGetFlags(hier);
-    RpHAnimHierarchySetFlags(hier, (RpHAnimHierarchyFlag)((int)curFlags | (int)kUpdateFlags));
-    RpHAnimHierarchyUpdateMatrices(hier);
-
-    // Step 2: Overwrite ONLY the Bullet-controlled bones with ragdoll transforms
-    BoneNodePhysics::WriteBulletMatricesToHierarchy(ped, hier, matrices);
-
-    // Step 3: Clear update flags — GTA's internal UpdateMatrices call inside render is now a no-op
-    // Our matrices survive to the actual skinning/render
-    RpHAnimHierarchySetFlags(hier, (RpHAnimHierarchyFlag)((int)curFlags & ~(int)kUpdateFlags));
-}
-
-void OnAfterPedRender(CPed* ped) {
-    if (!ped || g_RagdollPeds.find(ped) == g_RagdollPeds.end()) return;
-    if (!ped->m_pRwClump) return;
-
-    RpHAnimHierarchy* hier = GetAnimHierarchyFromSkinClump(ped->m_pRwClump);
-    if (!hier) return;
-
-    // Step 3: Restore update flags so next frame's anim blend + UpdateMatrices works
-    // (we'll override again in OnBeforePedRender before render)
-    RpHAnimHierarchyFlag flags = RpHAnimHierarchyGetFlags(hier);
-    RpHAnimHierarchySetFlags(hier, (RpHAnimHierarchyFlag)((int)flags | (int)kUpdateFlags));
 }
 
 // ============ SPAWN RAGDOLL PED ============
@@ -464,20 +518,22 @@ void SpawnRagdollPed() {
         newPed->m_pIntelligence->ClearTasks(true, true);
 
     // Disable GTA's own physics engine for this ped so Bullet controls it
-    newPed->SkipPhysics();
+    // newPed->SkipPhysics();
     
     newPed->bDontApplySpeed     = true;
     newPed->bInfiniteMass       = false;   // must be false or GTA ignores forces
     newPed->bIsStatic           = false;   // must be false or GTA won't call physics
     newPed->bUsesCollision      = false;   // don't let GTA do collision response
     newPed->bDontAcceptIKLookAts = true;
-    // newPed->bDisableCollisionForce = true;
-    // newPed->bCollidable         = false;
-    // newPed->bDisableTurnForce   = true;
-    // newPed->bDisableMoveForce   = true;
-    // newPed->bStayInSamePlace = true;
+    newPed->bDisableCollisionForce = true;
+    newPed->bCollidable         = false;
+    newPed->bDisableTurnForce   = true;
+    newPed->bDisableMoveForce   = true;
+    newPed->bStayInSamePlace = true;
+    newPed->bDontUpdateHierarchy = true; // we'll update bone matrices manually from Bullet
 
-    newPed->m_fHealth = 0.0f;
+    // newPed->m_fHealth = 0.0f;
+    newPed->m_ePedState = PEDSTATE_NONE; // no animations, GTA won't interfere with physics
 
     newPed->m_vecMoveSpeed      = CVector(0, 0, 0);
     newPed->m_vecTurnSpeed      = CVector(0, 0, 0);
@@ -610,6 +666,13 @@ void HandleInput() {
         CleanupAllRagdolls();
     wasCleanPressed = isCleanPressed;
 
+    // ALT+7 — Toggle bone ID/name overlay
+    static bool wasBoneOverlayPressed = false;
+    bool isBoneOverlayPressed = KeyPressed(VK_MENU) && KeyPressed('7');
+    if (isBoneOverlayPressed && !wasBoneOverlayPressed)
+        g_DebugBoneNames = !g_DebugBoneNames;
+    wasBoneOverlayPressed = isBoneOverlayPressed;
+
     UpdateDragSystem();
 }
 
@@ -656,11 +719,18 @@ void DrawDebugInfo() {
     yPos += 4.0f;
     printLine("~y~ALT+8 ~w~Spawn Ragdoll");
     printLine("~y~ALT+9 ~w~Clear All");
+    printLine("~y~ALT+7 ~w~Bone ID/Name");
     printLine("~y~[G]   ~w~Hold to Drag");
 
     if(FindPlayerPed()) {
         sprintf_s(buf, "~w~Position: ~y~%f, %f, %f", FindPlayerPed()->GetPosition().x, FindPlayerPed()->GetPosition().y, FindPlayerPed()->GetPosition().z); 
         printLine(buf);
+    }
+
+    if (g_DebugBoneNames) {
+        for (auto* ped : g_RagdollPeds) {
+            DrawDebugBoneNamesForPed(ped);
+        }
     }
     // NOTE: DrawDebugBoneLines is called from drawingEvent (separate hook)
     // to avoid D3D9 state changes corrupting CFont rendering.
@@ -770,8 +840,8 @@ public:
         Events::drawingEvent += []{ BoneNodePhysics::DrawDebugBoneLines(); };
 
         // Disable custom bone drawing in favor of BoneHelper
-        // Legacy GTA/BoneHelper bone override path is intentionally disabled.
-        // Wireframe ragdoll is rendered only via DrawDebugBoneLines().
+        BoneHelper::Initialise();
+        BoneHelper::RenderEvent += BoneNodePhysics::SyncBulletToBoneHelperRender;
 
         Events::shutdownRwEvent    += CleanupBulletWorld;
         Events::pedDtorEvent       += OnPedDestroyed;

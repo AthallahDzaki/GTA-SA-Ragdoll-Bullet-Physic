@@ -71,7 +71,6 @@ if(MSVC)
 endif()
 
 target_compile_definitions(AppGenericJointDemo PRIVATE
-    BT_DEBUG=1
     BT_USE_DEBUG_COUNTER=1   # kalau Bullet pakai macro ini
 )
 
