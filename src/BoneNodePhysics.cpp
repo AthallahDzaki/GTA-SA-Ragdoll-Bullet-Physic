@@ -18,7 +18,7 @@ extern void DebugLog(const std::string& msg);
 extern bool g_PhysicsShutdown;   // set in main.cpp before world is deleted
 
 static bool g_DisableBulletToBones = false;
-static bool g_DebugTPoseFlying = true;
+static bool g_DebugTPoseFlying = false;
 
 // ============================================================
 //  Shape + Mass per bone
@@ -621,31 +621,31 @@ void BoneNodePhysics::SyncAllToBullet(CPed* ped) {
         b->rigidBody->setAngularVelocity(btVector3(0, 0, 0));
 
         // ---- Capture initial Bullet local rotation ----
-        if (b->parentTag >= 0) {
-            auto* parentData = findBone(b->parentTag);
-            if (parentData && parentData->rigidBody) {
-                btTransform parentTF = parentData->rigidBody->getWorldTransform();
-                btTransform localTF  = parentTF.inverse() * tf;
-                b->initBulletLocalQuat = localTF.getRotation();
-            } else {
-                b->initBulletLocalQuat = tf.getRotation();
-            }
-        } else {
-            // Root bone: local = world rotation (relative to ped entity)
-            b->initBulletLocalQuat = tf.getRotation();
-        }
-        b->initBulletLocalQuat.normalize();
+        // if (b->parentTag >= 0) {
+        //     auto* parentData = findBone(b->parentTag);
+        //     if (parentData && parentData->rigidBody) {
+        //         btTransform parentTF = parentData->rigidBody->getWorldTransform();
+        //         btTransform localTF  = parentTF.inverse() * tf;
+        //         b->initBulletLocalQuat = localTF.getRotation();
+        //     } else {
+        //         b->initBulletLocalQuat = tf.getRotation();
+        //     }
+        // } else {
+        //     // Root bone: local = world rotation (relative to ped entity)
+        //     b->initBulletLocalQuat = tf.getRotation();
+        // }
+        // b->initBulletLocalQuat.normalize();
 
         // ---- Capture initial GTA interp frame quaternion ----
-        if (clumpData && b->boneIndex >= 0) {
-            auto* frameData = &clumpData->m_pFrames[b->boneIndex];
-            if (frameData && frameData->m_pIFrame) {
-                auto* frame = reinterpret_cast<RpHAnimBlendInterpFrame*>(frameData->m_pIFrame);
-                RtQuat& q = frame->orientation;
-                b->initGtaQuat = btQuaternion(q.imag.x, q.imag.y, q.imag.z, q.real);
-                b->initGtaQuat.normalize();
-            }
-        }
+        // if (clumpData && b->boneIndex >= 0) {
+        //     auto* frameData = &clumpData->m_pFrames[b->boneIndex];
+        //     if (frameData && frameData->m_pIFrame) {
+        //         auto* frame = reinterpret_cast<RpHAnimBlendInterpFrame*>(frameData->m_pIFrame);
+        //         RtQuat& q = frame->orientation;
+        //         b->initGtaQuat = btQuaternion(q.imag.x, q.imag.y, q.imag.z, q.real);
+        //         b->initGtaQuat.normalize();
+        //     }
+        // }
     }
 
     DebugLog("SyncAllToBullet: pushed " + std::to_string(it->second.size()) + " bones (with init quats)");
@@ -692,11 +692,11 @@ void BoneNodePhysics::SyncAllFromBullet() {
         CVector newPos(pelvisPos.x(), pelvisPos.y(), pelvisPos.z());
         ped->SetPosn(newPos);
 
-        CMatrix* pedMat = ped->GetMatrix();
-        if (pedMat) {
-            pedMat->GetPosition() = newPos;
-            pedMat->UpdateRW();
-        }
+        // CMatrix* pedMat = ped->GetMatrix();
+        // if (pedMat) {
+        //     pedMat->GetPosition() = newPos;
+        //     pedMat->UpdateRW();
+        // }
         ped->m_vecMoveSpeed = CVector(0, 0, 0);
         ped->m_vecTurnSpeed = CVector(0, 0, 0);
     }
@@ -724,49 +724,56 @@ void BoneNodePhysics::SyncBulletToBoneHelperRender(CPed* ped) {
         const btVector3 btPos = worldTF.getOrigin();
         const btQuaternion btQuat = worldTF.getRotation();
 
-        RwV3d bonePos = { btPos.x(), btPos.y(), btPos.z() };
-        BoneHelper::SetBonePosition(ped, tag, bonePos);
+        RwMatrix boneMtx;
+        BtTransformToRwMatrix(worldTF, boneMtx);
 
-        RtQuat rtQuat;
-        rtQuat.imag.x = btQuat.x();
-        rtQuat.imag.y = btQuat.y();
-        rtQuat.imag.z = btQuat.z();
-        rtQuat.real   = btQuat.w();
+        BoneHelper::SetBoneRWMatrix(ped, tag, boneMtx);
 
-        RwV3d angles = {0.0f, 0.0f, 0.0f};
-        BoneHelper::QuatToEuler(&rtQuat, &angles);
-        if (applyRotation) {
-            BoneHelper::SetBoneRotation(ped, tag, angles);
-        }
+        // RwV3d bonePos = { btPos.x(), btPos.y(), btPos.z() };
+        // BoneHelper::SetBonePosition(ped, tag, bonePos);
+
+        // RtQuat rtQuat;
+        // rtQuat.imag.x = btQuat.x();
+        // rtQuat.imag.y = btQuat.y();
+        // rtQuat.imag.z = btQuat.z();
+        // rtQuat.real   = btQuat.w();
+
+        // RwV3d angles = {0.0f, 0.0f, 0.0f};
+        // BoneHelper::QuatToEuler(&rtQuat, &angles);
+        // if (applyRotation) {
+        //     BoneHelper::SetBoneRotation(ped, tag, angles);
+        // }
 
         // Head group mapping: apply HEAD to HEAD1/HEAD2 only.
         if (tag == BONE_HEAD) {
-            BoneHelper::SetBonePosition(ped, BONE_HEAD1, bonePos);
-            if (applyRotation) {
-                BoneHelper::SetBoneRotation(ped, BONE_HEAD1, angles);
-            }
-            BoneHelper::SetBonePosition(ped, BONE_HEAD2, bonePos);
-            if (applyRotation) {
-                BoneHelper::SetBoneRotation(ped, BONE_HEAD2, angles);
-            }
+            // BoneHelper::SetBonePosition(ped, BONE_HEAD1, bonePos);
+            // if (applyRotation) {
+            //     BoneHelper::SetBoneRotation(ped, BONE_HEAD1, angles);
+            // }
+            // BoneHelper::SetBonePosition(ped, BONE_HEAD2, bonePos);
+            // if (applyRotation) {
+            //     BoneHelper::SetBoneRotation(ped, BONE_HEAD2, angles);
+            // }
+            BoneHelper::SetBoneRWMatrix(ped, BONE_HEAD1, boneMtx);
+            BoneHelper::SetBoneRWMatrix(ped, BONE_HEAD2, boneMtx);
         }
 
         if (tag == BONE_PELVIS) {
-            BoneHelper::SetBonePosition(ped, BONE_PELVIS1, bonePos);
+            BoneHelper::SetBoneRWMatrix(ped, BONE_PELVIS1, boneMtx);
         }
 
         if (tag == BONE_LEFTHAND) {
-            BoneHelper::SetBonePosition(ped, BONE_LEFTTHUMB, bonePos);
-            if (applyRotation) {
-                BoneHelper::SetBoneRotation(ped, BONE_LEFTTHUMB, angles);
-            }
+            BoneHelper::SetBoneRWMatrix(ped, BONE_LEFTTHUMB, boneMtx);
+            // if (applyRotation) {
+            //     BoneHelper::SetBoneRotation(ped, BONE_LEFTTHUMB, angles);
+            // }
         }
 
         if (tag == BONE_RIGHTHAND) {
-            BoneHelper::SetBonePosition(ped, BONE_RIGHTTHUMB, bonePos);
-            if (applyRotation) {
-                BoneHelper::SetBoneRotation(ped, BONE_RIGHTTHUMB, angles);
-            }
+            BoneHelper::SetBoneRWMatrix(ped, BONE_RIGHTTHUMB, boneMtx);
+            // if (applyRotation) {
+            //     BoneHelper::SetBoneRotation(ped, BONE_RIGHTTHUMB, angles);
+            // }
         }
     };
 
@@ -808,10 +815,9 @@ void BoneNodePhysics::SyncBulletToBoneHelperRender(CPed* ped) {
         return;
     }
 
-    // for (auto& b : it->second) {
-    //     applyBulletToBone(b->boneTag);
-    // }
-
+    for (auto& b : it->second) {
+        applyBulletToBone(b->boneTag, true);
+    }
 }
 
 // ============================================================

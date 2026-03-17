@@ -321,12 +321,12 @@ void CreateBulletRagdollForPed(CPed* ped) {
     DebugLog::Log(buf);
 
     BoneNodePhysics::CreateConstraintsForPed(ped);
-    BoneNodePhysics::SyncAllToBullet(ped);
+    // BoneNodePhysics::SyncAllToBullet(ped);
     BoneNodePhysics::ActivatePhysicsForPed(ped);
 
     // Add a ground plane at the ped's spawn point so it lands on the road
     // and doesn't fall through the world while mesh collision loads.
-    AddGroundPlaneAtPos(ped->GetPosition());
+    AddGroundPlaneAtPos(ped->GetPosition()); // TODO: Make the Plane match Ground
 
     DebugLog::Log("=== Ragdoll creation complete ===");
 }
@@ -842,6 +842,7 @@ public:
         // Disable custom bone drawing in favor of BoneHelper
         BoneHelper::Initialise();
         BoneHelper::RenderEvent += BoneNodePhysics::SyncBulletToBoneHelperRender;
+        BoneHelper::RenderEventAfterUpdate += BoneNodePhysics::SyncBulletToBoneHelperRender;
 
         Events::shutdownRwEvent    += CleanupBulletWorld;
         Events::pedDtorEvent       += OnPedDestroyed;

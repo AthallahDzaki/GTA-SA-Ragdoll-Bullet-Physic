@@ -27,8 +27,8 @@ struct BonePhysicsData {
     // Captured at creation time to compute delta changes at runtime.
     // GTA applies bind-pose on top of the interp frame quaternion,
     // so we must only write the CHANGE in rotation, not the absolute rotation.
-    btQuaternion initBulletLocalQuat = btQuaternion::getIdentity();  // initial Bullet local rotation
-    btQuaternion initGtaQuat         = btQuaternion::getIdentity();  // initial GTA interp frame quaternion
+    //btQuaternion initBulletLocalQuat = btQuaternion::getIdentity();  // initial Bullet local rotation
+    //btQuaternion initGtaQuat         = btQuaternion::getIdentity();  // initial GTA interp frame quaternion
 
     ~BonePhysicsData();
 };
@@ -62,6 +62,8 @@ public:
 
     static int GetBoneCount();
     static int GetActiveBoneCount();
+
+    void UpdatePedBoneMatrix (CPed* ped);
 
     // Draw 3D debug lines connecting parent/child bones (skeleton wireframe)
     static void DrawDebugBoneLines();

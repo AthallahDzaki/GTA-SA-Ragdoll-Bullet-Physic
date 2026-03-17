@@ -53,6 +53,13 @@ BoneHelper::RenderPed (CPed *ped)
 
         UpdatePed (ped);
 
+        if(renderHooksAfterUpdate.size() > 0) {
+            for (auto &hookedFunction : renderHooksAfterUpdate)
+            {
+                hookedFunction (ped);
+            }
+        }
+
         _setBoneScales (ped);
         _setBonePositions (ped);
 
@@ -100,6 +107,22 @@ BoneHelper::GetBoneRwMatrix (CPed *ped, unsigned int boneId)
     }
 
     return nullptr;
+}
+
+void BoneHelper::SetBoneRWMatrix (CPed *ped, unsigned int boneId, RwMatrix matrix)
+{
+    auto clump = ped->m_pRwClump;
+    if (!clump) return;
+
+    RpHAnimHierarchy *hAnimHier = GetAnimHierarchyFromSkinClump (clump);
+    if (hAnimHier && hAnimHier->pNodeInfo)
+    {
+        int boneAnimIdIndex = RpHAnimIDGetIndex (hAnimHier, boneId);
+        if (boneAnimIdIndex != -1 && boneAnimIdIndex < hAnimHier->numNodes)
+        {
+            RpHAnimHierarchyGetMatrixArray (hAnimHier)[boneAnimIdIndex] = matrix;
+        }
+    }
 }
 
 RwV3d

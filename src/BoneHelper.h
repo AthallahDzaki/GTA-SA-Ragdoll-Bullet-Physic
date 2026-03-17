@@ -23,6 +23,8 @@ class BoneHelper
     typedef void (*PedRenderFunctionHook) (CPed *);
     static inline std::vector<PedRenderFunctionHook> renderHooks = {};
 
+    static inline std::vector<PedRenderFunctionHook> renderHooksAfterUpdate = {};
+
     struct RpHAnimBlendInterpFrame
     {
         RtQuat orientation;
@@ -68,6 +70,29 @@ public:
         }
     } RenderEvent;
 
+    static inline struct RenderEventAfterUpdateStruct
+    {
+        void
+        operator+= (PedRenderFunctionHook function)
+        {
+            auto hook = std::find (renderHooksAfterUpdate.begin (),
+                                   renderHooksAfterUpdate.end (), function);
+            if (hook == renderHooksAfterUpdate.end ())
+            {
+                renderHooksAfterUpdate.push_back (function);
+            }
+        }
+
+        void
+        operator-= (PedRenderFunctionHook function)
+        {
+            renderHooksAfterUpdate.erase (
+                std::remove (renderHooksAfterUpdate.begin (),
+                             renderHooksAfterUpdate.end (), function),
+                renderHooksAfterUpdate.end ());
+        }
+    } RenderEventAfterUpdate;
+
     static void Initialise ();
 
     static void PedConstructor (CPed *ped);
@@ -79,6 +104,8 @@ public:
     static AnimBlendFrameData *GetBoneById (CPed *ped, unsigned int boneId);
 
     static RwMatrix *GetBoneRwMatrix (CPed *ped, unsigned int boneId);
+
+    static void SetBoneRWMatrix (CPed *ped, unsigned int boneId, RwMatrix matrix);
 
     static RwV3d GetBonePosition (CPed *ped, unsigned int boneId);
 
