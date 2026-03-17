@@ -235,7 +235,7 @@ btScalar(0.)));
 	{
 		localA.setIdentity(); localB.setIdentity();
 
-		localA.setOrigin(btVector3(btScalar(-0.2*scale_ragdoll), btScalar(0.15*scale_ragdoll), btScalar(0.)));
+		localA.setOrigin(btVector3(btScalar(-0.17*scale_ragdoll), btScalar(0.10*scale_ragdoll), btScalar(0.)));
 
 		localB.getBasis().setEulerZYX(SIMD_HALF_PI,0,-SIMD_HALF_PI);
 		localB.setOrigin(btVector3(btScalar(0.), btScalar(-0.18*scale_ragdoll), btScalar(0.)));
@@ -249,8 +249,8 @@ btScalar(0.)));
 		joint6DOF->setAngularLowerLimit(btVector3(-SIMD_PI*0.8f,-SIMD_EPSILON,-SIMD_PI*0.5f));
 		joint6DOF->setAngularUpperLimit(btVector3(SIMD_PI*0.8f,SIMD_EPSILON,SIMD_PI*0.5f));
 #endif
-		m_joints[JOINT_UPPERTORSO_TO_LEFTSHOULDER] = joint6DOF;
-		m_ownerWorld->addConstraint(m_joints[JOINT_UPPERTORSO_TO_LEFTSHOULDER], true);
+		m_joints[JOINT_UPPERTORSO_TO_LEFTUPPERTORSO] = joint6DOF;
+		m_ownerWorld->addConstraint(m_joints[JOINT_UPPERTORSO_TO_LEFTUPPERTORSO], true);
 	}
 /// *************************** ///
 
@@ -259,7 +259,7 @@ btScalar(0.)));
 	{
 		localA.setIdentity(); localB.setIdentity();
 
-		localA.setOrigin(btVector3(btScalar(0.2*scale_ragdoll), btScalar(0.15*scale_ragdoll), btScalar(0.)));
+		localA.setOrigin(btVector3(btScalar(0.17*scale_ragdoll), btScalar(0.10*scale_ragdoll), btScalar(0.)));
 		localB.getBasis().setEulerZYX(0,0,SIMD_HALF_PI);
 		localB.setOrigin(btVector3(btScalar(0.), btScalar(-0.18*scale_ragdoll), btScalar(0.)));
 		joint6DOF = new btGeneric6DofConstraint(*m_bodies[BODYPART_SPINE], *m_bodies[BODYPART_RIGHT_UPPER_ARM], localA, localB,useLinearReferenceFrameA);
@@ -272,10 +272,11 @@ btScalar(0.)));
 		joint6DOF->setAngularLowerLimit(btVector3(-SIMD_PI*0.8f,-SIMD_EPSILON,-SIMD_PI*0.5f));
 		joint6DOF->setAngularUpperLimit(btVector3(SIMD_PI*0.8f,SIMD_EPSILON,SIMD_PI*0.5f));
 #endif
-		m_joints[JOINT_UPPERTORSO_TO_RIGHTSHOULDER] = joint6DOF;
-		m_ownerWorld->addConstraint(m_joints[JOINT_UPPERTORSO_TO_RIGHTSHOULDER], true);
+		m_joints[JOINT_UPPERTORSO_TO_RIGHTUPPERTORSO] = joint6DOF;
+		m_ownerWorld->addConstraint(m_joints[JOINT_UPPERTORSO_TO_RIGHTUPPERTORSO], true);
 	}
 /// *************************** ///
+
 
 /// ******* LEFT ELBOW ******** ///
 	{

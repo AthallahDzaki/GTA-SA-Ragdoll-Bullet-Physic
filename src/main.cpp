@@ -261,18 +261,20 @@ struct BoneLink { int parentTag; int childTag; };
 static const BoneLink g_BoneChain[] = {
     {-1,               BONE_PELVIS1},
 
-    {BONE_PELVIS1,      BONE_PELVIS},
-    {BONE_PELVIS,       BONE_SPINE1},
-    {BONE_SPINE1,       BONE_UPPERTORSO},
-    {BONE_UPPERTORSO,   BONE_NECK},
     {BONE_NECK,         BONE_HEAD},
+    {BONE_UPPERTORSO,   BONE_NECK},
+    {BONE_SPINE1,       BONE_UPPERTORSO},
+    {BONE_PELVIS,       BONE_SPINE1},
+    {BONE_PELVIS1,      BONE_PELVIS},
 
-    {BONE_UPPERTORSO,   BONE_LEFTSHOULDER},
+    {BONE_UPPERTORSO,   BONE_LEFTUPPERTORSO}, // PUNGGUNG ATAS -> PUNGGUNG ATAS KIRI
+    {BONE_LEFTUPPERTORSO, BONE_LEFTSHOULDER},
     {BONE_LEFTSHOULDER, BONE_LEFTELBOW},
     {BONE_LEFTELBOW,    BONE_LEFTWRIST},
     {BONE_LEFTWRIST,    BONE_LEFTHAND},
 
-    {BONE_UPPERTORSO,   BONE_RIGHTSHOULDER},
+    {BONE_UPPERTORSO,    BONE_RIGHTUPPERTORSO}, // PUNGGUNG ATAS -> PUNGGUNG ATAS KANAN
+    {BONE_RIGHTUPPERTORSO,BONE_RIGHTSHOULDER},
     {BONE_RIGHTSHOULDER,BONE_RIGHTELBOW},
     {BONE_RIGHTELBOW,   BONE_RIGHTWRIST},
     {BONE_RIGHTWRIST,   BONE_RIGHTHAND},
@@ -288,6 +290,36 @@ static const BoneLink g_BoneChain[] = {
     {BONE_RIGHTANKLE,   BONE_RIGHTFOOT},
 };
 
+static void ApplyInitialTPoseToPed(CPed* ped) {
+    if (!ped) return;
+
+    const RwV3d zero = {0.0f, 0.0f, 0.0f};
+    BoneHelper::SetBoneRotation(ped, BONE_NECK, zero);
+    BoneHelper::SetBoneRotation(ped, BONE_SPINE1, zero);
+    BoneHelper::SetBoneRotation(ped, BONE_UPPERTORSO, zero);
+
+    BoneHelper::SetBoneRotation(ped, BONE_LEFTUPPERTORSO, {0.0f, -90.0f, 90.0f});
+    BoneHelper::SetBoneRotation(ped, BONE_RIGHTUPPERTORSO, {0.0f, 90.0f, 90.0f});
+
+    BoneHelper::SetBoneRotation(ped, BONE_LEFTSHOULDER, {0.0f, 0.0f, 90.0f});
+    BoneHelper::SetBoneRotation(ped, BONE_RIGHTSHOULDER, {0.0f, 0.0f, -90.0f});
+    BoneHelper::SetBoneRotation(ped, BONE_LEFTELBOW, zero);
+    BoneHelper::SetBoneRotation(ped, BONE_RIGHTELBOW, zero);
+    BoneHelper::SetBoneRotation(ped, BONE_LEFTWRIST, zero);
+    BoneHelper::SetBoneRotation(ped, BONE_RIGHTWRIST, zero);
+    BoneHelper::SetBoneRotation(ped, BONE_LEFTHAND, zero);
+    BoneHelper::SetBoneRotation(ped, BONE_RIGHTHAND, zero);
+
+    BoneHelper::SetBoneRotation(ped, BONE_LEFTHIP, {0.0f, 180.0f, 0.0f});
+    BoneHelper::SetBoneRotation(ped, BONE_RIGHTHIP, {0.0f, 180.0f, 0.0f});
+    BoneHelper::SetBoneRotation(ped, BONE_LEFTKNEE, zero);
+    BoneHelper::SetBoneRotation(ped, BONE_RIGHTKNEE, zero);
+    BoneHelper::SetBoneRotation(ped, BONE_LEFTANKLE, zero);
+    BoneHelper::SetBoneRotation(ped, BONE_RIGHTANKLE, zero);
+
+    BoneHelper::UpdatePed(ped);
+}
+
 void CreateBulletRagdollForPed(CPed* ped) {
     if (!ped) return;
     DebugLog::Log("=== Creating ragdoll for ped ===");
@@ -300,6 +332,9 @@ void CreateBulletRagdollForPed(CPed* ped) {
 
     BoneNodePhysics::RegisterHierarchy(ped, hier);
 
+    // Force spawn pose to TPose before we sample matrices for Bullet bodies.
+    ApplyInitialTPoseToPed(ped);
+
     // Update hierarchy so bone world matrices are current before reading them
     RpHAnimHierarchySetFlags(hier,
         (RpHAnimHierarchyFlag)(RpHAnimHierarchyGetFlags(hier)
@@ -311,6 +346,10 @@ void CreateBulletRagdollForPed(CPed* ped) {
     for (const auto& entry : g_BoneChain) {
         int boneIndex = RpHAnimIDGetIndex(hier, entry.childTag);
         if (boneIndex < 0) continue;
+
+        DebugLog::Log("Creating rigid body for bone tag " + std::to_string(entry.childTag));
+        DebugLog::Log("Bone index in hierarchy: " + std::to_string(boneIndex));
+        DebugLog::Log("Parent bone tag: " + std::to_string(entry.parentTag));
 
         if (BoneNodePhysics::CreatePhysicsForPedBone(ped, entry.childTag, boneIndex, entry.parentTag))
             ++created;
@@ -327,6 +366,9 @@ void CreateBulletRagdollForPed(CPed* ped) {
     // Add a ground plane at the ped's spawn point so it lands on the road
     // and doesn't fall through the world while mesh collision loads.
     AddGroundPlaneAtPos(ped->GetPosition()); // TODO: Make the Plane match Ground
+
+    float dt = CTimer::ms_fTimeStep / 50.0f;
+    g_DynamicsWorld->stepSimulation(dt, 10, 1.0f / 120.0f); // STEP ONCE TO SET INITIAL POSES
 
     DebugLog::Log("=== Ragdoll creation complete ===");
 }
@@ -470,12 +512,12 @@ void UpdateRagdollPeds() {
         ped->m_vecMoveSpeed = CVector(0, 0, 0);
         ped->m_vecTurnSpeed = CVector(0, 0, 0);
         ped->bUpdateAnimHeading = false;
+        // ped->bDontRender = true; // Skip 
 
         if (ped->m_pIntelligence)
             ped->m_pIntelligence->ClearTasks(false, false);
 
         // Prevent GTA from streaming the ped out
-        ped->m_nAreaCode          = 0;
         ped->bStreamingDontDelete = true;
         ped->bImBeingRendered     = true;
     }
@@ -743,8 +785,7 @@ void ProcessBulletPhysics() {
 
     try {
         // GTA's ms_fTimeStep is in game ticks (1/50s base). Convert to seconds.
-        float dt = CTimer::ms_fTimeStep * (1.0f / 50.0f);
-        dt = std::min(dt, 0.05f);   // cap at 50ms to avoid explosion on lag
+        float dt = CTimer::ms_fTimeStep / 50.0f;
 
         UpdateRagdollPeds();
 
