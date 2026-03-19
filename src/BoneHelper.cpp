@@ -2,6 +2,7 @@
 #include "BoneHelper.h"
 #include "CMatrix.h"
 #include "CPed.h"
+#include "BoneNodePhysics.h"
 
 #include <CCutsceneMgr.h>
 #include <CTimer.h>
@@ -41,36 +42,17 @@ BoneHelper::RenderPed (CPed *ped)
 
     pedLastRendered[ped] = CTimer::m_FrameCounter;
 
-    if (renderHooks.size () > 0)
-    {
-        for (auto &hookedFunction : renderHooks)
-        {
-            hookedFunction (ped);
-        }
+    BoneNodePhysics::SyncBulletToBoneHelperRender(ped);
 
-        _setBonePositions (ped);
-        _setBoneRotations (ped);
+    _setBonePositions (ped);
+    _setBoneRotations (ped);
 
-        UpdatePed (ped);
+    UpdatePed (ped);
 
-        if(renderHooksAfterUpdate.size() > 0) {
-            for (auto &hookedFunction : renderHooksAfterUpdate)
-            {
-                hookedFunction (ped);
-            }
-        }
+    _setBoneScales (ped);
+    _setBonePositions (ped);
 
-        _setBoneScales (ped);
-        _setBonePositions (ped);
-
-        _clearBoneMaps (ped);
-    }
-    else if (!ped->m_nModelIndex
-             || ped->m_nModelIndex == MODEL_CSPLAY
-                    && CCutsceneMgr::ms_cutsceneTimer)
-    {
-        ShoulderBoneRotation (ped);
-    }
+    _clearBoneMaps (ped);
 }
 
 AnimBlendFrameData *
@@ -265,8 +247,8 @@ BoneHelper::UpdatePed (CPed *ped, bool updateHierarchy)
         ped->bDontUpdateHierarchy = updateHierarchy;
 
         // This is the wrong address - PR a fix to plugin-sdk?
-        // ped->UpdateRpHAnim ();
-        CallMethod<0x532B20, CPed *> (ped);
+        ped->UpdateRpHAnim ();
+        // CallMethod<0x532B20, CPed *> (ped);
 
         if (!ped->m_nModelIndex
             || ped->m_nModelIndex == MODEL_CSPLAY

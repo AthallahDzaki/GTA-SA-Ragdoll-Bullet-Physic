@@ -10,6 +10,13 @@
 class CPed;
 struct RpHAnimHierarchy;
 
+enum class eBoneDrawMode {
+    None = 0,
+    GameBone,
+    BulletBone,
+    Both
+};
+
 struct BonePhysicsData {
     btRigidBody*           rigidBody    = nullptr;
     btCollisionShape*      shape        = nullptr;
@@ -27,8 +34,9 @@ struct BonePhysicsData {
     // Captured at creation time to compute delta changes at runtime.
     // GTA applies bind-pose on top of the interp frame quaternion,
     // so we must only write the CHANGE in rotation, not the absolute rotation.
-    //btQuaternion initBulletLocalQuat = btQuaternion::getIdentity();  // initial Bullet local rotation
-    //btQuaternion initGtaQuat         = btQuaternion::getIdentity();  // initial GTA interp frame quaternion
+    btQuaternion initBulletLocalQuat = btQuaternion::getIdentity();  // initial Bullet local rotation
+    btQuaternion initGtaQuat         = btQuaternion::getIdentity();  // initial GTA interp frame quaternion
+    bool         hasInitPose         = false;
 
     ~BonePhysicsData();
 };
@@ -38,6 +46,7 @@ private:
     static inline btDiscreteDynamicsWorld* s_DynamicsWorld = nullptr;
     static inline std::unordered_map<CPed*, std::vector<std::unique_ptr<BonePhysicsData>>> s_PedBones;
     static inline std::unordered_map<CPed*, RpHAnimHierarchy*> s_PedHierarchies;
+    static inline eBoneDrawMode s_DrawBoneMode = eBoneDrawMode::None;
 
 public:
     static void Initialize(btDiscreteDynamicsWorld* world);
@@ -50,7 +59,7 @@ public:
     static void DeactivatePhysicsForPed(CPed* ped);
 
     static void SyncAllToBullet(CPed* ped);
-    static void SyncAllFromBullet();
+    static void CalculateBulletPhysics();
     static void SyncBulletToBoneHelperRender(CPed* ped);
 
     static void RegisterHierarchy(CPed* ped, RpHAnimHierarchy* hier);
@@ -71,4 +80,7 @@ public:
     // Called from pedRenderEvent.before — writes Bullet world transforms directly
     // into the RpHAnim skinning matrix array, overriding GTA's animation pose.
     static void WriteBulletMatricesToHierarchy(CPed* ped, RpHAnimHierarchy* hier, RwMatrix* matrices);
+
+    static void SetBoneDrawMode(eBoneDrawMode mode) { s_DrawBoneMode = mode; }
+    static eBoneDrawMode GetBoneDrawMode() { return s_DrawBoneMode; }
 };

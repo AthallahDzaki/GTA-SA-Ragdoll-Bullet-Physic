@@ -20,7 +20,7 @@ extern bool g_PhysicsShutdown;   // set in main.cpp before world is deleted
 static bool g_DisableBulletToBones = false;
 static bool g_DebugTPoseFlying = false;
 static constexpr int kInitialTPoseFrames = 30;
-static std::unordered_map<CPed*, int> g_InitialTPoseFrameLeft;
+
 
 // ============================================================
 //  Shape + Mass per bone
@@ -76,7 +76,8 @@ static btCollisionShape* MakeShapeForBone(int boneTag, float& massOut) {
             massOut = 1.5f;  return new btBoxShape(btVector3(0.09f, 0.045f, 0.13f));
 
         default:
-            return nullptr;
+            std::cout << "Failed to create shape for bone tag " << boneTag << std::endl; return nullptr;
+
     }
 }
 
@@ -125,6 +126,72 @@ void BoneNodePhysics::Shutdown() {
     s_PedHierarchies.clear();
     s_DynamicsWorld = nullptr;
     DebugLog("BoneNodePhysics::Shutdown done");
+}
+
+void BoneNodePhysics::CalculateBulletPhysics() {
+    for (auto& [ped, bones] : s_PedBones) {
+        if (!ped) continue;
+
+        // auto tPoseIt = g_InitialTPoseFrameLeft.find(ped);
+        // if (tPoseIt != g_InitialTPoseFrameLeft.end() && tPoseIt->second > 0) {
+        //     --tPoseIt->second;
+
+        //     for (auto& b : bones) {
+        //         if (!b->isActive || !b->rigidBody) continue;
+        //         b->rigidBody->setLinearVelocity(btVector3(0.0f, 0.0f, 0.0f));
+        //         b->rigidBody->setAngularVelocity(btVector3(0.0f, 0.0f, 0.0f));
+        //         b->rigidBody->clearForces();
+        //     }
+
+        //     if (tPoseIt->second == 0) {
+        for (auto& b : bones) {
+            if (!b->isActive || !b->rigidBody) continue;
+            const int flags = b->rigidBody->getCollisionFlags();
+            b->rigidBody->setCollisionFlags(flags & ~btCollisionObject::CF_KINEMATIC_OBJECT);
+            if (s_DynamicsWorld) {
+                b->rigidBody->setGravity(s_DynamicsWorld->getGravity());
+            }
+            b->rigidBody->activate(true);
+            b->rigidBody->setActivationState(ACTIVE_TAG);
+        }
+        //     }
+
+        //     continue;
+        // }
+
+        // Helper: find a BonePhysicsData by tag
+        auto findBone = [&](int tag) -> BonePhysicsData* {
+            for (auto& b : bones)
+                if (b->boneTag == tag) return b.get();
+            return nullptr;
+        };
+
+        // ---- 0. Clamp bone velocities ----
+        const float MAX_BONE_SPEED    = 20.0f;
+        const float MAX_BONE_SPEED_SQ = MAX_BONE_SPEED * MAX_BONE_SPEED;
+        for (auto& b : bones) {
+            if (!b->isActive || !b->rigidBody) continue;
+            btVector3 v = b->rigidBody->getLinearVelocity();
+            if (v.length2() > MAX_BONE_SPEED_SQ)
+                b->rigidBody->setLinearVelocity(v.normalized() * MAX_BONE_SPEED);
+        }
+
+        // ---- 1. Move ped entity to pelvis Bullet position ----
+        auto* pelvis = findBone(BONE_PELVIS);
+        if (!pelvis || !pelvis->rigidBody || !pelvis->isActive) continue;
+
+        btVector3 pelvisPos = pelvis->rigidBody->getWorldTransform().getOrigin();
+        CVector newPos(pelvisPos.x(), pelvisPos.y(), pelvisPos.z());
+        ped->SetPosn(newPos);
+
+        // CMatrix* pedMat = ped->GetMatrix();
+        // if (pedMat) {
+        //     pedMat->GetPosition() = newPos;
+        //     pedMat->UpdateRW();
+        // }
+        ped->m_vecMoveSpeed = CVector(0, 0, 0);
+        ped->m_vecTurnSpeed = CVector(0, 0, 0);
+    }
 }
 
 // ============================================================
@@ -211,9 +278,9 @@ void BoneNodePhysics::CreateConstraintsForPed(CPed* ped) {
     auto* pelvis1        = findBone(BONE_PELVIS1);        // extra GTA pelvis root
     auto* pelvis         = findBone(BONE_PELVIS);         // BODYPART_PELVIS
     auto* spine1         = findBone(BONE_SPINE1);         // extra GTA spine bone
-    auto* upperTorso     = findBone(BONE_UPPERTORSO);     // BODYPART_SPINE
-    auto* neck           = findBone(BONE_NECK);           // BODYPART_NECK
-    auto* head           = findBone(BONE_HEAD);           // BODYPART_HEAD
+    auto* neck           = findBone(BONE_UPPERTORSO);     // BODYPART_UPPER_TORSO (UPPERTORSO WAS A NECK BONE IN GTA, SO WE USE THE SPINE1 BONE FOR THE UPPER TORSO JOINT)
+    auto* head           = findBone(BONE_NECK);           // BODYPART_NECK (NECK WAS A HEAD BONE IN GTA, SO WE USE THE HEAD BONE FOR THE NECK JOINT)
+    //auto* head           = findBone(BONE_HEAD);         // BODYPART_HEAD (HEAD WAS A JAW BONE IN GTA, SO WE USE THE NECK BONE FOR THE HEAD JOINT)
     auto* leftShoulder   = findBone(BONE_LEFTSHOULDER);   // BODYPART_LEFT_UPPER_ARM
     auto* leftElbow      = findBone(BONE_LEFTELBOW);      // BODYPART_LEFT_LOWER_ARM
     auto* leftWrist      = findBone(BONE_LEFTWRIST);      // BODYPART_LEFT_WRIST
@@ -231,13 +298,13 @@ void BoneNodePhysics::CreateConstraintsForPed(CPed* ped) {
     auto* rightAnkle     = findBone(BONE_RIGHTANKLE);     // BODYPART_RIGHT_FOOT (GTA has ankle)
     auto* rightFoot      = findBone(BONE_RIGHTFOOT);      // foot
 
-    if (!pelvis1 || !pelvis || (!upperTorso && !spine1) || !head) {
+    if (!pelvis1 || !pelvis || !spine1 || !head) {
         DebugLog("CreateConstraintsForPed: missing mapped GTA bones (pelvis1/pelvis/spine/head)");
         return;
     }
 
     btScalar scale = 1.0f;
-    BonePhysicsData* scaleSpine = upperTorso ? upperTorso : spine1;
+    BonePhysicsData* scaleSpine = spine1;
     if (pelvis1->rigidBody && scaleSpine && scaleSpine->rigidBody) {
         btVector3 p = pelvis1->rigidBody->getWorldTransform().getOrigin();
         btVector3 s = scaleSpine->rigidBody->getWorldTransform().getOrigin();
@@ -302,7 +369,7 @@ void BoneNodePhysics::CreateConstraintsForPed(CPed* ped) {
     }
 
     // SPINE1 -> UPPER TORSO
-    if (spine1 && upperTorso && addJoint(spine1, upperTorso,
+    if (spine1 && neck && addJoint(spine1, neck,
                  btVector3(0.0f, 0.12f, 0.0f),
                  btVector3(0.0f,-0.12f, 0.0f),
                  btVector3(0.0f, SIMD_HALF_PI, 0.0f),
@@ -312,27 +379,16 @@ void BoneNodePhysics::CreateConstraintsForPed(CPed* ped) {
         ++created;
     }
 
-    // PELVIS -> UPPER TORSO (fallback if spine1 missing)
-    if (!spine1 && upperTorso && addJoint(pelvis, upperTorso,
-                 btVector3(0.0f, 0.15f, 0.0f),
-                 btVector3(0.0f,-0.15f, 0.0f),
-                 btVector3(0.0f, SIMD_HALF_PI, 0.0f),
-                 btVector3(0.0f, SIMD_HALF_PI, 0.0f),
-                 btVector3(-SIMD_PI * 0.2f, -eps, -SIMD_PI * 0.3f),
-                 btVector3( SIMD_PI * 0.2f,  eps,  SIMD_PI * 0.6f))) {
-        ++created;
-    }
-
-    // UPPER TORSO -> NECK
-    if (upperTorso && neck && addJoint(upperTorso, neck,
-                 btVector3(0.0f, 0.20f, 0.0f),
-                 btVector3(0.0f,-0.08f, 0.0f),
-                 btVector3(0.0f, 0.0f, 0.0f),
-                 btVector3(0.0f, 0.0f, 0.0f),
-                 btVector3(-SIMD_PI * 0.2f, -eps, -SIMD_PI * 0.2f),
-                 btVector3( SIMD_PI * 0.3f,  eps,  SIMD_PI * 0.2f))) {
-        ++created;
-    }
+    // // UPPER TORSO -> NECK
+    // if (upperTorso && neck && addJoint(upperTorso, neck,
+    //              btVector3(0.0f, 0.20f, 0.0f),
+    //              btVector3(0.0f,-0.08f, 0.0f),
+    //              btVector3(0.0f, 0.0f, 0.0f),
+    //              btVector3(0.0f, 0.0f, 0.0f),
+    //              btVector3(-SIMD_PI * 0.2f, -eps, -SIMD_PI * 0.2f),
+    //              btVector3( SIMD_PI * 0.3f,  eps,  SIMD_PI * 0.2f))) {
+    //     ++created;
+    // }
 
     // NECK -> HEAD (forehead)
     if (neck && head && addJoint(neck, head,
@@ -345,30 +401,8 @@ void BoneNodePhysics::CreateConstraintsForPed(CPed* ped) {
         ++created;
     }
 
-    // // HEAD2 -> HEAD1 (eyebrows)
-    // if (head2 && head1 && addJoint(head2, head1,
-    //              btVector3(0.0f, 0.05f, 0.0f),
-    //              btVector3(0.0f,-0.05f, 0.0f),
-    //              btVector3(0.0f, 0.0f, 0.0f),
-    //              btVector3(0.0f, 0.0f, 0.0f),
-    //              btVector3(-SIMD_PI * 0.2f, -eps, -SIMD_PI * 0.2f),
-    //              btVector3( SIMD_PI * 0.2f,  eps,  SIMD_PI * 0.2f))) {
-    //     ++created;
-    // }
-
-    // // HEAD1 -> HEAD (jaw/head)
-    // if (head1 && head && addJoint(head1, head,
-    //              btVector3(0.0f, 0.08f, 0.0f),
-    //              btVector3(0.0f,-0.10f, 0.0f),
-    //              btVector3(0.0f, 0.0f, 0.0f),
-    //              btVector3(0.0f, 0.0f, 0.0f),
-    //              btVector3(-SIMD_PI * 0.3f, -eps, -SIMD_PI * 0.3f),
-    //              btVector3( SIMD_PI * 0.5f,  eps,  SIMD_PI * 0.3f))) {
-    //     ++created;
-    // }
-
     // LEFT SHOULDER -> UPPER TORSO (GTA extra upper torso bone for better shoulder joint) This joint exist in GTA Skeleton and follow UPPERTORSO movement, but it is not parent of SHOULDER bone, so we can use it to create more natural shoulder joint without affecting torso movement.
-    if (leftShoulder && addJoint(leftShoulder, upperTorso,
+    if (leftShoulder && addJoint(leftShoulder, neck,
                  btVector3(-0.2f, 0.15f, 0.0f),
                  btVector3( 0.0f,-0.18f, 0.0f),
                  btVector3(0.0f, 0.0f, 0.0f),
@@ -390,7 +424,7 @@ void BoneNodePhysics::CreateConstraintsForPed(CPed* ped) {
     }
 
     // UPPER TORSO -> RIGHT UPPER TORSO (clavicle): keep clavicle attached to torso.
-    if (upperTorso && rightUpperTorso && addJoint(upperTorso, rightUpperTorso,
+    if (neck && rightUpperTorso && addJoint(neck, rightUpperTorso,
                  btVector3( 0.17f, 0.10f, 0.0f),
                  btVector3( 0.0f,-0.08f, 0.0f),
                  btVector3(0.0f, 0.0f, 0.0f),
@@ -577,8 +611,6 @@ void BoneNodePhysics::ActivatePhysicsForPed(CPed* ped) {
     auto it = s_PedBones.find(ped);
     if (it == s_PedBones.end()) return;
 
-    g_InitialTPoseFrameLeft[ped] = kInitialTPoseFrames;
-
     int activated = 0;
     for (auto& b : it->second) {
         b->isActive = true;
@@ -631,7 +663,6 @@ void BoneNodePhysics::DeactivatePhysicsForPed(CPed* ped) {
     // unique_ptr destructors now safely delete the objects
     s_PedBones.erase(it);
     s_PedHierarchies.erase(ped);
-    g_InitialTPoseFrameLeft.erase(ped);
 }
 
 // ============================================================
@@ -648,12 +679,12 @@ void BoneNodePhysics::SyncAllToBullet(CPed* ped) {
     if (hierIt == s_PedHierarchies.end()) return;
     RpHAnimHierarchy* hier = hierIt->second;
 
-    // Ensure hierarchy matrices are up to date
-    RpHAnimHierarchySetFlags(hier,
-        (RpHAnimHierarchyFlag)(RpHAnimHierarchyGetFlags(hier)
-            | rpHANIMHIERARCHYUPDATELTMS
-            | rpHANIMHIERARCHYUPDATEMODELLINGMATRICES));
-    RpHAnimHierarchyUpdateMatrices(hier);
+    // // Ensure hierarchy matrices are up to date
+    // RpHAnimHierarchySetFlags(hier,
+    //     (RpHAnimHierarchyFlag)(RpHAnimHierarchyGetFlags(hier)
+    //         | rpHANIMHIERARCHYUPDATELTMS
+    //         | rpHANIMHIERARCHYUPDATEMODELLINGMATRICES));
+    // RpHAnimHierarchyUpdateMatrices(hier);
 
     RwMatrix* matrices = RpHAnimHierarchyGetMatrixArray(hier);
 
@@ -664,7 +695,6 @@ void BoneNodePhysics::SyncAllToBullet(CPed* ped) {
         return nullptr;
     };
 
-    // Get initial GTA interp frame quaternions
     auto* clumpData = RpClumpGetAnimBlendClumpData(ped->m_pRwClump);
 
     for (auto& b : it->second) {
@@ -681,112 +711,34 @@ void BoneNodePhysics::SyncAllToBullet(CPed* ped) {
         b->rigidBody->setAngularVelocity(btVector3(0, 0, 0));
 
         // ---- Capture initial Bullet local rotation ----
-        // if (b->parentTag >= 0) {
-        //     auto* parentData = findBone(b->parentTag);
-        //     if (parentData && parentData->rigidBody) {
-        //         btTransform parentTF = parentData->rigidBody->getWorldTransform();
-        //         btTransform localTF  = parentTF.inverse() * tf;
-        //         b->initBulletLocalQuat = localTF.getRotation();
-        //     } else {
-        //         b->initBulletLocalQuat = tf.getRotation();
-        //     }
-        // } else {
-        //     // Root bone: local = world rotation (relative to ped entity)
-        //     b->initBulletLocalQuat = tf.getRotation();
-        // }
-        // b->initBulletLocalQuat.normalize();
+        if (b->parentTag >= 0) {
+            auto* parentData = findBone(b->parentTag);
+            if (parentData && parentData->rigidBody) {
+                btTransform parentTF = parentData->rigidBody->getWorldTransform();
+                btTransform localTF  = parentTF.inverse() * tf;
+                b->initBulletLocalQuat = localTF.getRotation();
+            }
+            else {
+                b->initBulletLocalQuat = tf.getRotation();
+            }
+        }
+        else {
+            b->initBulletLocalQuat = tf.getRotation();
+        }
+        b->initBulletLocalQuat.normalize();
 
         // ---- Capture initial GTA interp frame quaternion ----
-        // if (clumpData && b->boneIndex >= 0) {
-        //     auto* frameData = &clumpData->m_pFrames[b->boneIndex];
-        //     if (frameData && frameData->m_pIFrame) {
-        //         auto* frame = reinterpret_cast<RpHAnimBlendInterpFrame*>(frameData->m_pIFrame);
-        //         RtQuat& q = frame->orientation;
-        //         b->initGtaQuat = btQuaternion(q.imag.x, q.imag.y, q.imag.z, q.real);
-        //         b->initGtaQuat.normalize();
-        //     }
-        // }
+        b->initGtaQuat = btQuaternion::getIdentity();
+        if (clumpData && b->boneIndex >= 0) {
+            auto* frameData = &clumpData->m_pFrames[b->boneIndex];
+            if (frameData && frameData->m_pIFrame) {
+                auto* frame = reinterpret_cast<RpHAnimBlendInterpFrame*>(frameData->m_pIFrame);
+                b->initGtaQuat = RtQuatToBtQuat(frame->orientation);
+            }
+        }
     }
 
     DebugLog("SyncAllToBullet: pushed " + std::to_string(it->second.size()) + " bones (with init quats)");
-}
-
-// ============================================================
-//  SyncAllFromBullet  (called every Bullet step)
-//
-//  Only handles physics-side updates:
-//   - Velocity clamping
-//   - Move ped entity to pelvis position (keeps streaming/culling happy)
-//   - Update heading from spine direction
-//
-//  Matrix write is done in WriteBulletMatricesToHierarchy(),
-//  called from pedRenderEvent.before so it fires AFTER GTA's
-//  animation update and can never be overwritten by the idle anim.
-// ============================================================
-void BoneNodePhysics::SyncAllFromBullet() {
-    for (auto& [ped, bones] : s_PedBones) {
-        if (!ped) continue;
-
-        auto tPoseIt = g_InitialTPoseFrameLeft.find(ped);
-        if (tPoseIt != g_InitialTPoseFrameLeft.end() && tPoseIt->second > 0) {
-            --tPoseIt->second;
-
-            for (auto& b : bones) {
-                if (!b->isActive || !b->rigidBody) continue;
-                b->rigidBody->setLinearVelocity(btVector3(0.0f, 0.0f, 0.0f));
-                b->rigidBody->setAngularVelocity(btVector3(0.0f, 0.0f, 0.0f));
-                b->rigidBody->clearForces();
-            }
-
-            if (tPoseIt->second == 0) {
-                for (auto& b : bones) {
-                    if (!b->isActive || !b->rigidBody) continue;
-                    const int flags = b->rigidBody->getCollisionFlags();
-                    b->rigidBody->setCollisionFlags(flags & ~btCollisionObject::CF_KINEMATIC_OBJECT);
-                    if (s_DynamicsWorld) {
-                        b->rigidBody->setGravity(s_DynamicsWorld->getGravity());
-                    }
-                    b->rigidBody->activate(true);
-                    b->rigidBody->setActivationState(ACTIVE_TAG);
-                }
-            }
-
-            continue;
-        }
-
-        // Helper: find a BonePhysicsData by tag
-        auto findBone = [&](int tag) -> BonePhysicsData* {
-            for (auto& b : bones)
-                if (b->boneTag == tag) return b.get();
-            return nullptr;
-        };
-
-        // ---- 0. Clamp bone velocities ----
-        const float MAX_BONE_SPEED    = 20.0f;
-        const float MAX_BONE_SPEED_SQ = MAX_BONE_SPEED * MAX_BONE_SPEED;
-        for (auto& b : bones) {
-            if (!b->isActive || !b->rigidBody) continue;
-            btVector3 v = b->rigidBody->getLinearVelocity();
-            if (v.length2() > MAX_BONE_SPEED_SQ)
-                b->rigidBody->setLinearVelocity(v.normalized() * MAX_BONE_SPEED);
-        }
-
-        // ---- 1. Move ped entity to pelvis Bullet position ----
-        auto* pelvis = findBone(BONE_PELVIS);
-        if (!pelvis || !pelvis->rigidBody || !pelvis->isActive) continue;
-
-        btVector3 pelvisPos = pelvis->rigidBody->getWorldTransform().getOrigin();
-        CVector newPos(pelvisPos.x(), pelvisPos.y(), pelvisPos.z());
-        ped->SetPosn(newPos);
-
-        // CMatrix* pedMat = ped->GetMatrix();
-        // if (pedMat) {
-        //     pedMat->GetPosition() = newPos;
-        //     pedMat->UpdateRW();
-        // }
-        ped->m_vecMoveSpeed = CVector(0, 0, 0);
-        ped->m_vecTurnSpeed = CVector(0, 0, 0);
-    }
 }
 
 void BoneNodePhysics::SyncBulletToBoneHelperRender(CPed* ped) {
@@ -796,15 +748,14 @@ void BoneNodePhysics::SyncBulletToBoneHelperRender(CPed* ped) {
     auto it = s_PedBones.find(ped);
     if (it == s_PedBones.end()) return;
 
-    const auto tPoseIt = g_InitialTPoseFrameLeft.find(ped);
-    const bool inInitialTPose = (tPoseIt != g_InitialTPoseFrameLeft.end() && tPoseIt->second > 0);
-
     auto findBoneData = [&](int tag) -> BonePhysicsData* {
         for (auto& b : it->second) {
             if (b->boneTag == tag) return b.get();
         }
         return nullptr;
     };
+
+    auto* clumpData = RpClumpGetAnimBlendClumpData(ped->m_pRwClump);
 
     auto applyBulletToBone = [&](int tag, bool applyRotation) {
         auto* b = findBoneData(tag);
@@ -814,10 +765,34 @@ void BoneNodePhysics::SyncBulletToBoneHelperRender(CPed* ped) {
         const btVector3 btPos = worldTF.getOrigin();
         const btQuaternion btQuat = worldTF.getRotation();
 
-        RwMatrix boneMtx;
-        BtTransformToRwMatrix(worldTF, boneMtx);
+        // Semua Rotasi GTA Itu 0, 0, 0 Di Frame Awal (Pose T), Jadi Kita Hitung Delta Rotasi Dari Pose Tersebut, Lalu Terapkan Delta Itu Ke Pose GTA Awal, Baru Kita Dapat Rotasi GTA Yang Benar Sesuai Rotasi Bullet Saat Ini. Dengan Cara Ini, Kita Bisa Mempertahankan Pose Awal GTA Sambil Tetap Sinkron Dengan Rotasi Bullet.
+        
+        // if (b->hasInitPose && clumpData && b->boneIndex >= 0) {
+        //     btQuaternion bulletLocalQuat = btQuat;
+        //     if (b->parentTag >= 0) {
+        //         auto* parentData = findBoneData(b->parentTag);
+        //         if (parentData && parentData->isActive && parentData->rigidBody) {
+        //             const btQuaternion parentWorldQuat = parentData->rigidBody->getWorldTransform().getRotation();
+        //             bulletLocalQuat = parentWorldQuat.inverse() * btQuat;
+        //         }
+        //     }
+        //     bulletLocalQuat.normalize();
 
-        BoneHelper::SetBoneRWMatrix(ped, tag, boneMtx);
+        //     btQuaternion deltaQuat = bulletLocalQuat * b->initBulletLocalQuat.inverse();
+        //     deltaQuat.normalize();
+
+        //     btQuaternion correctedGtaQuat = deltaQuat * b->initGtaQuat;
+        //     correctedGtaQuat.normalize();
+
+        //     auto* frameData = &clumpData->m_pFrames[b->boneIndex];
+        //     if (frameData && frameData->m_pIFrame) {
+        //         auto* frame = reinterpret_cast<RpHAnimBlendInterpFrame*>(frameData->m_pIFrame);
+        //         frame->orientation = BtQuatToRtQuat(correctedGtaQuat);
+        //     }
+        // }
+
+        //BoneHelper::SetBoneRWMatrix(ped, tag, boneMtx);
+        BoneHelper::SetBonePosition(ped, tag, { btPos.x(), btPos.y(), btPos.z() });
 
         // std::cout << "Bone Matrix Data for tag " << tag << ": " << std::endl;
         // std::cout << "BoneMTX : " << boneMtx.right.x << ", " << boneMtx.right.y << ", " << boneMtx.right.z << std::endl;
@@ -825,8 +800,8 @@ void BoneNodePhysics::SyncBulletToBoneHelperRender(CPed* ped) {
         // std::cout << "          " << boneMtx.at.x << ", " << boneMtx.at.y << ", " << boneMtx.at.z << std::endl;
         // std::cout << "          " << boneMtx.pos.x << ", " << boneMtx.pos.y << ", " << boneMtx.pos.z << std::endl;
 
-        // RwV3d bonePos = { btPos.x(), btPos.y(), btPos.z() };
-        // BoneHelper::SetBonePosition(ped, tag, bonePos);
+        RwV3d bonePos = { btPos.x(), btPos.y(), btPos.z() };
+        BoneHelper::SetBonePosition(ped, tag, bonePos);
 
         // RtQuat rtQuat;
         // rtQuat.imag.x = btQuat.x();
@@ -841,98 +816,39 @@ void BoneNodePhysics::SyncBulletToBoneHelperRender(CPed* ped) {
         // }
 
         // Head group mapping: apply HEAD to HEAD1/HEAD2 only.
-        if (tag == BONE_HEAD) {
-            // BoneHelper::SetBonePosition(ped, BONE_HEAD1, bonePos);
-            // if (applyRotation) {
-            //     BoneHelper::SetBoneRotation(ped, BONE_HEAD1, angles);
-            // }
-            // BoneHelper::SetBonePosition(ped, BONE_HEAD2, bonePos);
-            // if (applyRotation) {
-            //     BoneHelper::SetBoneRotation(ped, BONE_HEAD2, angles);
-            // }
-            BoneHelper::SetBoneRWMatrix(ped, BONE_HEAD1, boneMtx);
-            BoneHelper::SetBoneRWMatrix(ped, BONE_HEAD2, boneMtx);
+        if (tag == BONE_NECK) {
+            BoneHelper::SetBonePosition(ped, BONE_HEAD, bonePos);
+            BoneHelper::SetBonePosition(ped, BONE_HEAD1, bonePos);
+            BoneHelper::SetBonePosition(ped, BONE_HEAD2, bonePos);
         }
 
         if (tag == BONE_PELVIS) {
-            BoneHelper::SetBoneRWMatrix(ped, BONE_PELVIS1, boneMtx);
+            bonePos.y += 0.12f; // GTA has an extra pelvis bone (PELVIS1) above the main pelvis, so we need to offset the position up to match that.
+            BoneHelper::SetBonePosition(ped, BONE_PELVIS1, bonePos);
         }
 
         if (tag == BONE_LEFTHAND) {
-            BoneHelper::SetBoneRWMatrix(ped, BONE_LEFTTHUMB, boneMtx);
-            // if (applyRotation) {
-            //     BoneHelper::SetBoneRotation(ped, BONE_LEFTTHUMB, angles);
-            // }
+            BoneHelper::SetBonePosition(ped, BONE_LEFTTHUMB, bonePos);
+            BoneHelper::SetBoneRotation(ped, BONE_LEFTTHUMB, {0.0f, 0.0f, 0.0f}); // Reset GTA Euler overrides for thumb (prevents weird twisting). We will still apply Bullet rotation via RWMatrix, so the thumb will follow the hand properly, just without the extra GTA Euler rotation.
         }
 
         if (tag == BONE_RIGHTHAND) {
-            BoneHelper::SetBoneRWMatrix(ped, BONE_RIGHTTHUMB, boneMtx);
-            // if (applyRotation) {
-            //     BoneHelper::SetBoneRotation(ped, BONE_RIGHTTHUMB, angles);
-            // }
+            BoneHelper::SetBonePosition(ped, BONE_RIGHTTHUMB, bonePos);
+            BoneHelper::SetBoneRotation(ped, BONE_RIGHTTHUMB, {0.0f, 0.0f, 0.0f}); // Reset GTA Euler overrides for thumb (prevents weird twisting). We will still apply Bullet rotation via RWMatrix, so the thumb will follow the hand properly, just without the extra GTA Euler rotation.
         }
     };
 
-    if (g_DebugTPoseFlying || inInitialTPose) {
+    if (g_DebugTPoseFlying) {
+        // During debug/initial TPose window, use Bullet as the single source of truth.
+        // Do not inject manual GTA Euler overrides here.
         for (auto& b : it->second) {
-            applyBulletToBone(b->boneTag, false);
+            applyBulletToBone(b->boneTag, true);
         }
-
-        const RwV3d zeroRot = {0.0f, 0.0f, 0.0f};
-        std::vector<int> staticBones = {
-            BONE_NECK, BONE_SPINE1, BONE_UPPERTORSO,
-            BONE_LEFTHIP, BONE_LEFTKNEE, BONE_LEFTANKLE,
-            BONE_RIGHTHIP, BONE_RIGHTKNEE, BONE_RIGHTANKLE,
-            BONE_RIGHTUPPERTORSO, BONE_LEFTUPPERTORSO
-        };
-
-        for (int tag : staticBones) {
-            BoneHelper::SetBoneRotation(ped, tag, zeroRot);
-        }
-
-        // Fix hips
-        RwV3d fixHips = {0.0f, 180.0f, 0.0f};
-        BoneHelper::SetBoneRotation(ped, BONE_LEFTHIP, fixHips);
-        BoneHelper::SetBoneRotation(ped, BONE_RIGHTHIP, fixHips);
-
-        // Fix torsos
-        BoneHelper::SetBoneRotation(ped, BONE_LEFTUPPERTORSO, {0.0f, -90.0f, 90.0f});
-        BoneHelper::SetBoneRotation(ped, BONE_RIGHTUPPERTORSO, {0.0f, 90.0f, 90.0f});
-
-        // Let Bullet control arm rotations so they hang naturally
-        applyBulletToBone(BONE_LEFTSHOULDER, true);
-        applyBulletToBone(BONE_LEFTELBOW, true);
-        applyBulletToBone(BONE_LEFTWRIST, true);
-        applyBulletToBone(BONE_LEFTHAND, true);
-        applyBulletToBone(BONE_RIGHTSHOULDER, true);
-        applyBulletToBone(BONE_RIGHTELBOW, true);
-        applyBulletToBone(BONE_RIGHTWRIST, true);
-        applyBulletToBone(BONE_RIGHTHAND, true);
         return;
     }
 
     for (auto& b : it->second) {
         applyBulletToBone(b->boneTag, true);
-    }
-}
-
-// ============================================================
-//  WriteBulletMatricesToHierarchy
-//  Called from pedRenderEvent.before — overwrites GTA skinning
-//  matrices with Bullet world-space transforms just before render.
-// ============================================================
-void BoneNodePhysics::WriteBulletMatricesToHierarchy(CPed* ped, RpHAnimHierarchy* /*hier*/, RwMatrix* matrices) {
-    if (g_DisableBulletToBones) return;
-    if (g_DebugTPoseFlying) return;
-    auto it = s_PedBones.find(ped);
-    if (it == s_PedBones.end()) return;
-
-    for (auto& b : it->second) {
-        if (!b->isActive || !b->rigidBody) continue;
-        if (b->boneIndex < 0) continue;
-
-        // Write Bullet world-space transforms directly (hierarchy matrices are world-space)
-        BtTransformToRwMatrix(b->rigidBody->getWorldTransform(), matrices[b->boneIndex]);
     }
 }
 
@@ -1161,66 +1077,101 @@ void BoneNodePhysics::DrawDebugBoneLines() {
         {BONE_RIGHTANKLE,   BONE_RIGHTFOOT} // PERGELANGAN KANAN -> KAKI KANAN
     };
 
-    for (auto& [ped, hier] : s_PedHierarchies) {
-        if (!ped) continue;
+    // static inline std::unordered_map<CPed*, std::vector<std::unique_ptr<BonePhysicsData>>> s_PedBones;
+    
+    if (s_DrawBoneMode == eBoneDrawMode::None) return;
 
-        auto getBoneWorldPos = [&](int tag, RwV3d& outPos) -> bool {
-            if (!BoneHelper::IsValidBone(ped, tag)) return false;
-            outPos = BoneHelper::GetBonePosition(ped, tag);
-            return true;
-        };
+    // s_DrawBoneMode is bitwise, so we can combine multiple modes. For example, we can draw both Bullet bones and GTA bones at the same time for comparison.
+    if ((s_DrawBoneMode == eBoneDrawMode::BulletBone) || (s_DrawBoneMode == eBoneDrawMode::Both)) {
 
-        // Draw head marker (circle) so it's easy to identify.
-        RwV3d headWp = {0}, headSp = {0};
-        float headW = 0.0f, headH = 0.0f;
-        if (getBoneWorldPos(BONE_HEAD, headWp)
-            && CSprite::CalcScreenCoors(headWp, &headSp, &headW, &headH, true, true)) {
-            float radius = std::clamp(headH * 0.18f, 5.0f, 28.0f);
-            DrawCircleD3D9(dev, headSp.x, headSp.y, radius, D3DCOLOR_ARGB(255, 255, 60, 60), 24);
-        }
-
-        // Draw GTA bone IDs as screen-space numbers for all existing GTA bones.
-        for (int tag = BONE_PELVIS1; tag <= BONE_RIGHTFOOT; ++tag) {
-            RwV3d wp = {0};
-            if (!getBoneWorldPos(tag, wp)) continue;
-
-            RwV3d sp = {0};
-            float w = 0.0f, h = 0.0f;
-            if (!CSprite::CalcScreenCoors(wp, &sp, &w, &h, true, true)) continue;
-
-            float size = std::clamp(h * 0.08f, 6.0f, 16.0f);
-            D3DCOLOR color = GetBoneDebugColor(tag);
-            DrawNumberD3D9(dev, sp.x + size * 0.2f, sp.y - size * 1.2f, size, color, tag);
-
-            // Draw facing line from bone forward vector.
-            RwV3d rotation = BoneHelper::GetBoneRotation(ped, tag);
-            float lineLength = std::clamp(h * 0.25f, 10.0f, 40.0f);
-            float angleRad = rotation.y * (SIMD_PI / 180.0f);
-            float dx = std::sin(angleRad) * lineLength;
-            float dy = std::cos(angleRad) * lineLength;
-            DrawLineD3D9(dev, sp.x, sp.y, sp.x + dx, sp.y - dy, 1.0f, color);
+        for (auto& [ped, data] : s_PedBones) {
+            if (!ped) continue;
             
-            // Bulet Physic use Radian, same with GTA bone rotation, so draw a second line for the Bullet forward direction.
-            float bulletAngleRad = rotation.y * (SIMD_PI / 180.0f);
-            float bulletDx = std::sin(bulletAngleRad) * lineLength;
-            float bulletDy = std::cos(bulletAngleRad) * lineLength;
-            DrawLineD3D9(dev, sp.x, sp.y, sp.x + bulletDx, sp.y - bulletDy, 1.0f, D3DCOLOR_ARGB(255, 255, 0, 0));
+            for (auto& b : data) {
+                if (!b->isActive || !b->rigidBody) continue;
+                if (b->boneIndex < 0) continue;
+                
+                const btTransform worldTF = b->rigidBody->getWorldTransform();
+                const btVector3 btPos = worldTF.getOrigin();
+                const btQuaternion btQuat = worldTF.getRotation();
+
+                // Draw The rigid body bone with D3D9DrawLine
+                RwV3d bonePos = { btPos.x(), btPos.y(), btPos.z() };
+                RwV3d boneRot = { btQuat.x(), btQuat.y(), btQuat.z() };
+                
+                RwV3d screenPos = {0};
+                float w, h;
+                if (CSprite::CalcScreenCoors(bonePos, &screenPos, &w, &h, true, true)) {
+                    float size = std::clamp(h * 0.1f, 8.0f, 20.0f);
+                    D3DCOLOR color = D3DCOLOR_ARGB(255, 255, 0, 0);
+
+                    float length = std::clamp(h * 0.25f, 10.0f, 40.0f);
+                    float angleRad = boneRot.y * (SIMD_PI / 180.0f);
+                    float dx = std::sin(angleRad) * length;
+                    float dy = std::cos(angleRad) * length;
+                    DrawLineD3D9(dev, screenPos.x, screenPos.y, screenPos.x + dx, screenPos.y - dy, 2.0f, color);
+                }
+            }
         }
+    }
 
-        for (const auto& link : kMappedLinks) {
-            RwV3d wp1 = {0}, wp2 = {0};
-            if (!getBoneWorldPos(link.parentTag, wp1)) continue;
-            if (!getBoneWorldPos(link.childTag, wp2)) continue;
-            RwV3d sp1 = {0}, sp2 = {0};
-            float w, h;
+    if ((s_DrawBoneMode == eBoneDrawMode::GameBone) || (s_DrawBoneMode == eBoneDrawMode::Both)) {
 
-            // Project to screen coordinates
-            if (!CSprite::CalcScreenCoors(wp1, &sp1, &w, &h, true, true)) continue;
-            if (!CSprite::CalcScreenCoors(wp2, &sp2, &w, &h, true, true)) continue;
+        for (auto& [ped, hier] : s_PedHierarchies) {
+            if (!ped) continue;
 
-            D3DCOLOR color = GetBoneDebugColor(link.childTag);
+            auto getBoneWorldPos = [&](int tag, RwV3d& outPos) -> bool {
+                if (!BoneHelper::IsValidBone(ped, tag)) return false;
+                outPos = BoneHelper::GetBonePosition(ped, tag);
+                return true;
+            };
 
-            DrawLineD3D9(dev, sp1.x, sp1.y, sp2.x, sp2.y, 1.0f, color);
+            // Draw head marker (circle) so it's easy to identify.
+            RwV3d headWp = {0}, headSp = {0};
+            float headW = 0.0f, headH = 0.0f;
+            if (getBoneWorldPos(BONE_HEAD, headWp)
+                && CSprite::CalcScreenCoors(headWp, &headSp, &headW, &headH, true, true)) {
+                float radius = std::clamp(headH * 0.18f, 5.0f, 28.0f);
+                DrawCircleD3D9(dev, headSp.x, headSp.y, radius, D3DCOLOR_ARGB(255, 255, 60, 60), 24);
+            }
+
+            // Draw GTA bone IDs as screen-space numbers for all existing GTA bones.
+            for (int tag = BONE_PELVIS1; tag <= BONE_RIGHTFOOT; ++tag) {
+                RwV3d wp = {0};
+                if (!getBoneWorldPos(tag, wp)) continue;
+
+                RwV3d sp = {0};
+                float w = 0.0f, h = 0.0f;
+                if (!CSprite::CalcScreenCoors(wp, &sp, &w, &h, true, true)) continue;
+
+                float size = std::clamp(h * 0.08f, 6.0f, 16.0f);
+                D3DCOLOR color = GetBoneDebugColor(tag);
+                DrawNumberD3D9(dev, sp.x + size * 0.2f, sp.y - size * 1.2f, size, color, tag);
+
+                // Draw facing line from bone forward vector.
+                RwV3d rotation = BoneHelper::GetBoneRotation(ped, tag);
+                float lineLength = std::clamp(h * 0.25f, 10.0f, 40.0f);
+                float angleRad = rotation.y * (SIMD_PI / 180.0f);
+                float dx = std::sin(angleRad) * lineLength;
+                float dy = std::cos(angleRad) * lineLength;
+                DrawLineD3D9(dev, sp.x, sp.y, sp.x + dx, sp.y - dy, 1.0f, color);
+            }
+
+            for (const auto& link : kMappedLinks) {
+                RwV3d wp1 = {0}, wp2 = {0};
+                if (!getBoneWorldPos(link.parentTag, wp1)) continue;
+                if (!getBoneWorldPos(link.childTag, wp2)) continue;
+                RwV3d sp1 = {0}, sp2 = {0};
+                float w, h;
+
+                // Project to screen coordinates
+                if (!CSprite::CalcScreenCoors(wp1, &sp1, &w, &h, true, true)) continue;
+                if (!CSprite::CalcScreenCoors(wp2, &sp2, &w, &h, true, true)) continue;
+
+                D3DCOLOR color = GetBoneDebugColor(link.childTag);
+
+                DrawLineD3D9(dev, sp1.x, sp1.y, sp2.x, sp2.y, 1.0f, color);
+            }
         }
     }
 }

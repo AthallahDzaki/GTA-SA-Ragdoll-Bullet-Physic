@@ -1,5 +1,6 @@
 #pragma once
 #include "rwcore.h"
+#include "CVector.h"
 #include <btBulletDynamicsCommon.h>
 
 // RenderWare matrix convention:
@@ -36,4 +37,40 @@ inline void BtTransformToRwMatrix(const btTransform& t, RwMatrix& m) {
 
     m.pos.x = p.x(); m.pos.y = p.y(); m.pos.z = p.z();
     m.flags  = 0;
+}
+
+inline btVector3 CVectorToBtVector3(const CVector& v) {
+    return btVector3(v.x, v.y, v.z);
+}
+
+inline CVector BtVector3ToCVector(const btVector3& v) {
+    return CVector(v.x(), v.y(), v.z());
+}
+
+inline CVector GetRwMatrixPos(const RwMatrix& m) {
+    return CVector(m.pos.x, m.pos.y, m.pos.z);
+}
+
+inline void SetRwMatrixPos(RwMatrix& m, const CVector& p) {
+    m.pos.x = p.x;
+    m.pos.y = p.y;
+    m.pos.z = p.z;
+}
+
+inline btQuaternion RtQuatToBtQuat(const RtQuat& q) {
+    btQuaternion out(q.imag.x, q.imag.y, q.imag.z, q.real);
+    out.normalize();
+    return out;
+}
+
+inline RtQuat BtQuatToRtQuat(const btQuaternion& q) {
+    btQuaternion normalized = q;
+    normalized.normalize();
+
+    RtQuat out{};
+    out.imag.x = normalized.x();
+    out.imag.y = normalized.y();
+    out.imag.z = normalized.z();
+    out.real   = normalized.w();
+    return out;
 }

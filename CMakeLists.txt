@@ -87,6 +87,11 @@ add_library(${PROJECT_NAME} SHARED
     src/BoneHelper.cpp
 )
 
+set_target_properties(${PROJECT_NAME} PROPERTIES 
+    PREFIX "" 
+    SUFFIX ".asi"
+)
+
 # Include directories
 target_include_directories(${PROJECT_NAME}
     PRIVATE
@@ -114,6 +119,7 @@ target_link_libraries(${PROJECT_NAME}
 target_compile_definitions(${PROJECT_NAME}
     PRIVATE
         GTASA
+        RW
         $<$<CONFIG:Debug>:_DEBUG>
 )
 
