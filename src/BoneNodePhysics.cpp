@@ -16,6 +16,11 @@
 extern void DebugLog(const std::string& msg);
 extern bool g_PhysicsShutdown;   // set in main.cpp before world is deleted
 
+static constexpr short kCollisionGroupRagdoll = static_cast<short>(1 << 8);
+static constexpr short kCollisionGroupWorld   = static_cast<short>(1 << 9);
+static constexpr short kRagdollCollisionMask  = static_cast<short>(
+    btBroadphaseProxy::DefaultFilter | kCollisionGroupRagdoll | kCollisionGroupWorld);
+
 // ============================================================
 //  Shape + Mass per bone
 // ============================================================
@@ -29,7 +34,7 @@ static btCollisionShape* MakeShapeForBone(int boneTag, float& massOut) {
         case BONE_SPINE1:
             massOut = 14.0f; return new btCapsuleShapeZ(0.13f, 0.22f);
         case BONE_UPPERTORSO:
-            massOut = 18.0f; return new btCapsuleShapeZ(0.16f, 0.28f);
+            massOut = 15.0f; return new btCapsuleShapeZ(0.16f, 0.28f);
 
         // Head / Neck
         case BONE_NECK:
@@ -143,7 +148,20 @@ bool BoneNodePhysics::CreatePhysicsForPedBone(CPed* ped, int boneTag, int boneIn
 
     // Build initial transform from bone world matrix
     // (hierarchy matrices are already in world space after UpdateMatrices)
+    std::cout << "Bone " << boneTag << " world matrix: [" <<
+        boneMtx->right.x << "," << boneMtx->right.y << "," << boneMtx->right.z << "; " <<
+        boneMtx->up.x    << "," << boneMtx->up.y    << "," << boneMtx->up.z    << "; " <<
+        boneMtx->at.x    << "," << boneMtx->at.y    << "," << boneMtx->at.z    << "; " <<
+        boneMtx->pos.x   << "," << boneMtx->pos.y   << "," << boneMtx->pos.z   << "]" << std::endl;
+
     btTransform startTF = RwMatrixToBtTransform(*boneMtx);
+
+    std::cout << "Bone " << boneTag << " start transform: [" <<
+        startTF.getOrigin().x() << "," << startTF.getOrigin().y() << "," << startTF.getOrigin().z() << "]" << std::endl;
+    std::cout << "Bone " << boneTag << " basis: [" <<
+        startTF.getBasis().getRow(0).x() << "," << startTF.getBasis().getRow(0).y() << "," << startTF.getBasis().getRow(0).z() << "; " <<
+        startTF.getBasis().getRow(1).x() << "," << startTF.getBasis().getRow(1).y() << "," << startTF.getBasis().getRow(1).z() << "; " <<
+        startTF.getBasis().getRow(2).x() << "," << startTF.getBasis().getRow(2).y() << "," << startTF.getBasis().getRow(2).z() << "]" << std::endl;
 
     btVector3 inertia(0, 0, 0);
     if (mass > 0.0f) shape->calculateLocalInertia(mass, inertia);
@@ -156,6 +174,7 @@ bool BoneNodePhysics::CreatePhysicsForPedBone(CPed* ped, int boneTag, int boneIn
     ci.m_angularDamping = 0.85f;
     ci.m_friction       = 0.75f;
     ci.m_restitution    = 0.05f;
+    ci.m_additionalDamping = true;
 
     auto data             = std::make_unique<BonePhysicsData>();
     data->ownerPed        = ped;
@@ -172,9 +191,7 @@ bool BoneNodePhysics::CreatePhysicsForPedBone(CPed* ped, int boneTag, int boneIn
     data->rigidBody->setCcdSweptSphereRadius(0.05f);
 
     // Ragdoll bones collide with world but NOT with each other (avoids internal collisions)
-    short group = static_cast<short>(1 << 8);   // ragdoll layer
-    short mask  = static_cast<short>(~group);    // collide with everything except ragdoll
-    s_DynamicsWorld->addRigidBody(data->rigidBody, group, mask);
+    s_DynamicsWorld->addRigidBody(data->rigidBody, kCollisionGroupRagdoll, kRagdollCollisionMask);
 
     s_PedBones[ped].push_back(std::move(data));
     return true;
@@ -204,10 +221,14 @@ void BoneNodePhysics::CreateConstraintsForPed(CPed* ped) {
     auto* leftElbow      = findBone(BONE_LEFTELBOW);      // BODYPART_LEFT_LOWER_ARM
     auto* rightShoulder  = findBone(BONE_RIGHTSHOULDER);  // BODYPART_RIGHT_UPPER_ARM
     auto* rightElbow     = findBone(BONE_RIGHTELBOW);     // BODYPART_RIGHT_LOWER_ARM
+    auto* rightWrist     = findBone(BONE_RIGHTWRIST);     // BODYPART_RIGHT_HAND
+    auto* leftWrist      = findBone(BONE_LEFTWRIST);      // BODYPART_LEFT_HAND
     auto* leftHip        = findBone(BONE_LEFTHIP);        // BODYPART_LEFT_UPPER_LEG
     auto* leftKnee       = findBone(BONE_LEFTKNEE);       // BODYPART_LEFT_LOWER_LEG
     auto* rightHip       = findBone(BONE_RIGHTHIP);       // BODYPART_RIGHT_UPPER_LEG
     auto* rightKnee      = findBone(BONE_RIGHTKNEE);      // BODYPART_RIGHT_LOWER_LEG
+    auto* leftAnkle      = findBone(BONE_LEFTANKLE);      // BODYPART_LEFT_FOOT
+    auto* rightAnkle     = findBone(BONE_RIGHTANKLE);     // BODYPART_RIGHT_FOOT
 
     if (!pelvis || !spine || !head) {
         DebugLog("CreateConstraintsForPed: missing mapped GTA bones (pelvis/spine/head)");
@@ -300,6 +321,17 @@ void BoneNodePhysics::CreateConstraintsForPed(CPed* ped) {
         ++created;
     }
 
+    // LEFT WRIST
+    if (addJoint(leftElbow, leftWrist,
+                 btVector3(0.0f, 0.24f, 0.0f),
+                 btVector3(0.0f,-0.10f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(-SIMD_PI * 0.7f, -eps, -eps),
+                 btVector3( SIMD_PI * 0.05f, eps, eps))) {
+        ++created;
+    }
+
     // RIGHT ELBOW
     if (addJoint(rightShoulder, rightElbow,
                  btVector3(0.0f, 0.18f, 0.0f),
@@ -308,6 +340,17 @@ void BoneNodePhysics::CreateConstraintsForPed(CPed* ped) {
                  btVector3(0.0f, 0.0f, 0.0f),
                  btVector3(-eps, -eps, -eps),
                  btVector3(SIMD_PI * 0.7f, eps, eps))) {
+        ++created;
+    }
+
+    // RIGHT WRIST
+    if (addJoint(rightElbow, rightWrist,
+                 btVector3(0.0f, 0.24f, 0.0f),
+                 btVector3(0.0f,-0.10f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(-SIMD_PI * 0.7f, -eps, -eps),
+                 btVector3( SIMD_PI * 0.05f, eps, eps))) {
         ++created;
     }
 
@@ -355,6 +398,17 @@ void BoneNodePhysics::CreateConstraintsForPed(CPed* ped) {
         ++created;
     }
 
+    // LEFT ANKLE
+    if (addJoint(leftKnee, leftAnkle,
+                 btVector3(0.0f,-0.185f,0.0f),
+                 btVector3(0.0f, 0.12f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(-SIMD_PI * 0.7f, -eps, -eps),
+                 btVector3( SIMD_PI * 0.05f, eps, eps))) {
+        ++created;
+    }
+
     // RIGHT KNEE
     if (addJoint(rightHip, rightKnee,
                  btVector3(0.0f,-0.225f,0.0f),
@@ -363,6 +417,17 @@ void BoneNodePhysics::CreateConstraintsForPed(CPed* ped) {
                  btVector3(0.0f, 0.0f, 0.0f),
                  btVector3(-eps, -eps, -eps),
                  btVector3(SIMD_PI * 0.7f, eps, eps))) {
+        ++created;
+    }
+
+    // RIGHT ANKLE
+    if (addJoint(rightKnee, rightAnkle,
+                 btVector3(0.0f,-0.185f,0.0f),
+                 btVector3(0.0f, 0.12f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(0.0f, 0.0f, 0.0f),
+                 btVector3(-SIMD_PI * 0.7f, -eps, -eps),
+                 btVector3( SIMD_PI * 0.05f, eps, eps))) {
         ++created;
     }
 
@@ -463,7 +528,17 @@ void BoneNodePhysics::SyncAllToBullet(CPed* ped) {
         if (!b->rigidBody) continue;
 
         RwMatrix* boneMtx = &matrices[b->boneIndex];
+
+        // std::cout << "SyncToBullet - Bone " << b->boneTag << " world matrix: [" <<
+        //     boneMtx->right.x << "," << boneMtx->right.y << "," << boneMtx->right.z << "; " <<
+        //     boneMtx->up.x    << "," << boneMtx->up.y    << "," << boneMtx->up.z    << "; " <<
+        //     boneMtx->at.x    << "," << boneMtx->at.y    << "," << boneMtx->at.z    << "; " <<
+        //     boneMtx->pos.x   << "," << boneMtx->pos.y   << "," << boneMtx->pos.z   << "]" << std::endl;
+
         btTransform tf = RwMatrixToBtTransform(*boneMtx);
+
+        // std::cout << "SyncToBullet - Bone " << b->boneTag << " transform: [" <<
+        //     tf.getOrigin().x() << "," << tf.getOrigin().y() << "," << tf.getOrigin().z() << "]" << std::endl;
 
         b->rigidBody->setWorldTransform(tf);
         b->rigidBody->setInterpolationWorldTransform(tf);
@@ -728,10 +803,14 @@ void BoneNodePhysics::DrawDebugBoneLines() {
         {BONE_UPPERTORSO,    BONE_RIGHTSHOULDER},
         {BONE_LEFTSHOULDER,  BONE_LEFTELBOW},
         {BONE_RIGHTSHOULDER, BONE_RIGHTELBOW},
+        {BONE_LEFTELBOW,     BONE_LEFTWRIST},
+        {BONE_RIGHTELBOW,    BONE_RIGHTWRIST},
         {BONE_PELVIS,        BONE_LEFTHIP},
         {BONE_PELVIS,        BONE_RIGHTHIP},
         {BONE_LEFTHIP,       BONE_LEFTKNEE},
         {BONE_RIGHTHIP,      BONE_RIGHTKNEE},
+        {BONE_LEFTKNEE,      BONE_LEFTANKLE},
+        {BONE_RIGHTKNEE,     BONE_RIGHTANKLE},
     };
 
     for (auto& [ped, bones] : s_PedBones) {

@@ -2,6 +2,7 @@
 #include "BoneHelper.h"
 #include "CMatrix.h"
 #include "CPed.h"
+#include "BoneNodePhysics.h"
 
 #include <CCutsceneMgr.h>
 #include <CTimer.h>
@@ -41,29 +42,24 @@ BoneHelper::RenderPed (CPed *ped)
 
     pedLastRendered[ped] = CTimer::m_FrameCounter;
 
-    if (renderHooks.size () > 0)
-    {
-        for (auto &hookedFunction : renderHooks)
-        {
-            hookedFunction (ped);
-        }
+    BoneNodePhysics::SyncAllToBullet(ped);
 
-        _setBonePositions (ped);
-        _setBoneRotations (ped);
+    _setBonePositions (ped);
+    _setBoneRotations (ped);
 
-        UpdatePed (ped);
+    UpdatePed (ped);
 
-        _setBoneScales (ped);
-        _setBonePositions (ped);
+    _setBoneScales (ped);
+    _setBonePositions (ped);
 
-        _clearBoneMaps (ped);
-    }
-    else if (!ped->m_nModelIndex
-             || ped->m_nModelIndex == MODEL_CSPLAY
-                    && CCutsceneMgr::ms_cutsceneTimer)
-    {
-        ShoulderBoneRotation (ped);
-    }
+    _clearBoneMaps (ped);
+    // }
+    // else if (!ped->m_nModelIndex
+    //          || ped->m_nModelIndex == MODEL_CSPLAY
+    //                 && CCutsceneMgr::ms_cutsceneTimer)
+    // {
+    //     ShoulderBoneRotation (ped);
+    // }
 }
 
 AnimBlendFrameData *

@@ -3,14 +3,25 @@
 #include <btBulletDynamicsCommon.h>
 
 // RenderWare matrix convention:
-//   right = local X axis (column 0)
-//   at    = local Y axis (column 1, forward)
-//   up    = local Z axis (column 2)
-//   pos   = translation
+// Right
+// Up
+// At
 //
 // Bullet btMatrix3x3 constructor is row-major: (r0c0, r0c1, r0c2, r1c0, ...).
 // RW's right/at/up are COLUMN vectors (basis axes). To place them as columns
 // in btMatrix3x3, each row becomes (right[i], at[i], up[i]).
+
+// struct RwMatrix
+// {
+//     RwV3d        right;
+//     unsigned int flags;
+//     RwV3d        up;
+//     unsigned int pad1;
+//     RwV3d        at;
+//     unsigned int pad2;
+//     RwV3d        pos;
+//     unsigned int pad3;
+// };
 
 inline btTransform RwMatrixToBtTransform(const RwMatrix& m) {
     btMatrix3x3 basis(

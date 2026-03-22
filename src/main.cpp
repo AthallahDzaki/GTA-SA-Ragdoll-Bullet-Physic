@@ -13,11 +13,14 @@
 #include "CCamera.h"
 #include "rphanim.h"
 #include "rpskin.h"
-#include "BoneNodePhysics.h"
 #include "CFont.h"
 #include "extensions/FontPrint.h"
 #include "extensions/KeyCheck.h"
+
+#include "BoneHelper.h"
+#include "BoneNodePhysics.h"
 #include "ePedBones.h"
+// #include "tBoneInfo.h"
 
 #include <btBulletDynamicsCommon.h>
 #include <unordered_map>
@@ -73,6 +76,11 @@ btCollisionDispatcher*               g_Dispatcher      = nullptr;
 btBroadphaseInterface*               g_Broadphase      = nullptr;
 btSequentialImpulseConstraintSolver* g_Solver          = nullptr;
 
+static constexpr short kCollisionGroupRagdoll = static_cast<short>(1 << 8);
+static constexpr short kCollisionGroupWorld   = static_cast<short>(1 << 9);
+static constexpr short kWorldCollisionMask    = static_cast<short>(
+    btBroadphaseProxy::DefaultFilter | kCollisionGroupRagdoll);
+    
 std::unordered_map<int, btRigidBody*> g_LoadedCollisionBodies;
 std::vector<btTriangleMesh*>          g_TriangleMeshes;
 
@@ -133,7 +141,7 @@ static void AddGroundPlaneAtPos(const CVector& worldPos) {
     body->setFriction(0.7f);
     body->setRestitution(0.05f);
 
-    g_DynamicsWorld->addRigidBody(body);
+    g_DynamicsWorld->addRigidBody(body, kCollisionGroupWorld, kWorldCollisionMask);
     g_GroundPlanes.push_back({shape, body});
 
     char buf[128];
@@ -343,7 +351,7 @@ void UpdateCollisionPerArea() {
     int key = sx * 10000 + sy;
 
     if (!g_LoadedCollisionBodies.contains(key)) {
-        g_DynamicsWorld->addRigidBody(body);
+        g_DynamicsWorld->addRigidBody(body, kCollisionGroupWorld, kWorldCollisionMask);
         g_LoadedCollisionBodies[key] = body;
     } else {
         delete shape;
@@ -365,7 +373,7 @@ void UpdateRagdollPeds() {
         ped->m_vecMoveSpeed = CVector(0, 0, 0);
         ped->m_vecTurnSpeed = CVector(0, 0, 0);
         ped->bUpdateAnimHeading = false;
-        ped->bDontRender = true;  // wireframe only (hide GTA ped mesh)
+        // ped->bDontRender = true;  // wireframe only (hide GTA ped mesh)
 
         if (ped->m_pIntelligence)
             ped->m_pIntelligence->ClearTasks(false, false);
@@ -465,6 +473,11 @@ void SpawnRagdollPed() {
 
     // Disable GTA's own physics engine for this ped so Bullet controls it
     newPed->SkipPhysics();
+
+    for (const auto& entry : g_BoneChain) {
+        RwV3d at = BoneHelper::GetBoneRwMatrix(newPed, entry.tag)->at;
+        std::cout << "Ped ctor: " << newPed << " at (" << at.x << "," << at.y << "," << at.z << ")" << std::endl;
+    }
     
     newPed->bDontApplySpeed     = true;
     newPed->bInfiniteMass       = false;   // must be false or GTA ignores forces
@@ -493,6 +506,10 @@ void SpawnRagdollPed() {
         std::to_string(spawnPos.x) + "," +
         std::to_string(spawnPos.y) + "," +
         std::to_string(spawnPos.z));
+
+    // float dt = CTimer::ms_fTimeStep * (1.0f / 50.0f);
+    // dt = std::min(dt, 0.05f);   // cap at 50ms to avoid explosion on lag
+    // g_DynamicsWorld->stepSimulation(dt, 10, 1.0f / 120.0f);
 }
 
 void CleanupAllRagdolls() {
@@ -682,9 +699,6 @@ void ProcessBulletPhysics() {
         // maxSubSteps=10, fixedTimeStep=1/120 for stable joint solving
         g_DynamicsWorld->stepSimulation(dt, 10, 1.0f / 120.0f);
 
-        // Write Bullet bone transforms back to GTA skeleton
-        BoneNodePhysics::SyncAllFromBullet();
-
         // Update world collision every 60 frames (~1.2s at 50fps)
         if (g_FrameCounter % 60 == 0)
             UpdateCollisionPerArea();
@@ -768,10 +782,7 @@ public:
         // Bone lines use D3D9 DrawPrimitiveUP — must run in drawingEvent,
         // NOT in drawAfterFadeEvent alongside CFont, or it corrupts text.
         Events::drawingEvent += []{ BoneNodePhysics::DrawDebugBoneLines(); };
-
-        // Disable custom bone drawing in favor of BoneHelper
-        // Legacy GTA/BoneHelper bone override path is intentionally disabled.
-        // Wireframe ragdoll is rendered only via DrawDebugBoneLines().
+        BoneHelper::Initialise();
 
         Events::shutdownRwEvent    += CleanupBulletWorld;
         Events::pedDtorEvent       += OnPedDestroyed;
