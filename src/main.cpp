@@ -118,6 +118,13 @@ bool IsPedRagdoll(CPed* ped) {
     return g_RagdollPeds.find(ped) != g_RagdollPeds.end();
 }
 
+// ============ FORWARD DECLARATIONS ============
+void CreateBulletRagdollForPed(CPed* ped);
+void ProcessBulletPhysics();
+void OnBeforePedRender(CPed* ped);
+void OnAfterPedRender(CPed* ped);
+void CleanupBulletWorld();
+
 // ============ GROUND PLANE PER RAGDOLL ============
 // Query GTA SA's collision to get actual ground Z, then add a Bullet static
 // plane at that height.  This is a fallback so the ped doesn't fall into the
@@ -433,6 +440,74 @@ void OnAfterPedRender(CPed* ped) {
     // (we'll override again in OnBeforePedRender before render)
     RpHAnimHierarchyFlag flags = RpHAnimHierarchyGetFlags(hier);
     RpHAnimHierarchySetFlags(hier, (RpHAnimHierarchyFlag)((int)flags | (int)kUpdateFlags));
+}
+
+RpHAnimHierarchy* GetSkinHierarchy(RpClump* clump) {
+    if (!clump)
+        return nullptr;
+
+    return GetAnimHierarchyFromSkinClump(clump);
+}
+
+void RunGameUpdateRpHAnim(CEntity* entity) {
+   if (!entity)
+        return;
+
+    RpClump* clump = entity->m_pRwClump;
+    if (!clump)
+        return;
+
+    RpAtomic* atomic = GetFirstAtomic(clump);
+    if (!atomic)
+        return;
+
+    RpGeometry* geometry = RpAtomicGetGeometry(atomic);
+    if (!geometry)
+        return;
+
+    if (!RpSkinGeometryGetSkin(geometry))
+        return;
+
+    if (entity->bDontUpdateHierarchy)
+        return;
+
+    RpHAnimHierarchy* hierarchy = GetSkinHierarchy(clump);
+    if (!hierarchy)
+        return;
+
+    RpHAnimHierarchyUpdateMatrices(hierarchy);
+}
+
+void __fastcall OnCEntity__UpdateRpHAnim(CEntity* self, int) {
+    if (!self) return;
+    if (self->m_nType == 3) { 
+        CPed* ped = reinterpret_cast<CPed*>(self);
+
+        // 3. Cari di dalam Manager/Set Ragdoll kamu
+        if (g_RagdollPeds.find(ped) != g_RagdollPeds.end()) {
+            // Debugging: Gunakan plugin::Log untuk melihat di file .log jika console tidak muncul
+            std::cout << "Bypassing UpdateRpHAnim for Ped: " << self << std::endl;
+            OnBeforePedRender(ped);
+            return; // STOP di sini, jangan update animasi game asli
+        }
+    }
+
+    RunGameUpdateRpHAnim(self);
+}
+
+void __fastcall CPedPreRender(CPed* ped) {
+    if (ped) {
+        if (g_RagdollPeds.find(ped) != g_RagdollPeds.end()) {
+            std::cout << "PreRenderAfterTest called for ped " << ped << std::endl;
+            OnBeforePedRender(ped);
+        }
+        else if (ped->m_ePedState != PEDSTATE_DRIVING)
+            ped->PreRenderAfterTest(); // call original function for non-ragdoll peds so GTA can update their matrices as normal
+    }
+}
+
+void OurRenderEvent() {
+    ProcessBulletPhysics(); // step Bullet world before any peds are rendered
 }
 
 // ============ SPAWN RAGDOLL PED ============
@@ -775,14 +850,19 @@ public:
         DebugLog::Init();
         DebugLog::Log("=== BulletRagdollPlugin Init ===");
 
+        // injector::MakeCALL(0x5E8A29, PreRenderAfterTest);
+        patch::RedirectJump(0x5E8A20, CPedPreRender);
+        injector::MakeCALL(0x53E293, OurRenderEvent);
+        patch::RedirectJump(0x532B20, OnCEntity__UpdateRpHAnim);
+
         Events::initRwEvent        += InitBulletWorld;
-        Events::gameProcessEvent   += ProcessBulletPhysics;
+        // Events::gameProcessEvent   += ProcessBulletPhysics;
         Events::drawAfterFadeEvent += DrawDebugInfo;
 
         // Bone lines use D3D9 DrawPrimitiveUP — must run in drawingEvent,
         // NOT in drawAfterFadeEvent alongside CFont, or it corrupts text.
         Events::drawingEvent += []{ BoneNodePhysics::DrawDebugBoneLines(); };
-        BoneHelper::Initialise();
+        // BoneHelper::Initialise();
 
         Events::shutdownRwEvent    += CleanupBulletWorld;
         Events::pedDtorEvent       += OnPedDestroyed;

@@ -42,7 +42,8 @@ BoneHelper::RenderPed (CPed *ped)
 
     pedLastRendered[ped] = CTimer::m_FrameCounter;
 
-    BoneNodePhysics::SyncAllToBullet(ped);
+    // BoneNodePhysics::SyncAllToBullet(ped);
+    // BoneNodePhysics::SyncBulletToBoneHelperRender(ped);
 
     _setBonePositions (ped);
     _setBoneRotations (ped);

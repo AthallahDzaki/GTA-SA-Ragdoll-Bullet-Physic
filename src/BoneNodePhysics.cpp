@@ -503,16 +503,16 @@ void BoneNodePhysics::SyncAllToBullet(CPed* ped) {
 
     auto hierIt = s_PedHierarchies.find(ped);
     if (hierIt == s_PedHierarchies.end()) return;
-    RpHAnimHierarchy* hier = hierIt->second;
+    // RpHAnimHierarchy* hier = hierIt->second;
 
-    // Ensure hierarchy matrices are up to date
-    RpHAnimHierarchySetFlags(hier,
-        (RpHAnimHierarchyFlag)(RpHAnimHierarchyGetFlags(hier)
-            | rpHANIMHIERARCHYUPDATELTMS
-            | rpHANIMHIERARCHYUPDATEMODELLINGMATRICES));
-    RpHAnimHierarchyUpdateMatrices(hier);
+    // // Ensure hierarchy matrices are up to date
+    // RpHAnimHierarchySetFlags(hier,
+    //     (RpHAnimHierarchyFlag)(RpHAnimHierarchyGetFlags(hier)
+    //         | rpHANIMHIERARCHYUPDATELTMS
+    //         | rpHANIMHIERARCHYUPDATEMODELLINGMATRICES));
+    // RpHAnimHierarchyUpdateMatrices(hier);
 
-    RwMatrix* matrices = RpHAnimHierarchyGetMatrixArray(hier);
+    // RwMatrix* matrices = RpHAnimHierarchyGetMatrixArray(hier);
 
     // Helper: find a BonePhysicsData by tag
     auto findBone = [&](int tag) -> BonePhysicsData* {
@@ -521,13 +521,10 @@ void BoneNodePhysics::SyncAllToBullet(CPed* ped) {
         return nullptr;
     };
 
-    // Get initial GTA interp frame quaternions
-    auto* clumpData = RpClumpGetAnimBlendClumpData(ped->m_pRwClump);
-
     for (auto& b : it->second) {
         if (!b->rigidBody) continue;
 
-        RwMatrix* boneMtx = &matrices[b->boneIndex];
+        RwMatrix* boneMtx = BoneHelper::GetBoneRwMatrix(ped, b->boneTag);
 
         // std::cout << "SyncToBullet - Bone " << b->boneTag << " world matrix: [" <<
         //     boneMtx->right.x << "," << boneMtx->right.y << "," << boneMtx->right.z << "; " <<
@@ -563,16 +560,16 @@ void BoneNodePhysics::SyncAllToBullet(CPed* ped) {
         }
         b->initBulletLocalQuat.normalize();
 
-        // ---- Capture initial GTA interp frame quaternion ----
-        if (clumpData && b->boneIndex >= 0) {
-            auto* frameData = &clumpData->m_pFrames[b->boneIndex];
-            if (frameData && frameData->m_pIFrame) {
-                auto* frame = reinterpret_cast<RpHAnimBlendInterpFrame*>(frameData->m_pIFrame);
-                RtQuat& q = frame->orientation;
-                b->initGtaQuat = btQuaternion(q.imag.x, q.imag.y, q.imag.z, q.real);
-                b->initGtaQuat.normalize();
-            }
-        }
+        // // ---- Capture initial GTA interp frame quaternion ----
+        // if (clumpData && b->boneIndex >= 0) {
+        //     auto* frameData = &clumpData->m_pFrames[b->boneIndex];
+        //     if (frameData && frameData->m_pIFrame) {
+        //         auto* frame = reinterpret_cast<RpHAnimBlendInterpFrame*>(frameData->m_pIFrame);
+        //         RtQuat& q = frame->orientation;
+        //         b->initGtaQuat = btQuaternion(q.imag.x, q.imag.y, q.imag.z, q.real);
+        //         b->initGtaQuat.normalize();
+        //     }
+        // }
     }
 
     DebugLog("SyncAllToBullet: pushed " + std::to_string(it->second.size()) + " bones (with init quats)");
@@ -641,7 +638,141 @@ void BoneNodePhysics::SyncAllFromBullet() {
 }
 
 void BoneNodePhysics::SyncBulletToBoneHelperRender(CPed* ped) {
-    (void)ped;
+    if (!ped) return;
+
+    auto it = s_PedBones.find(ped);
+    if (it == s_PedBones.end()) return;
+
+    auto findBoneData = [&](int tag) -> BonePhysicsData* {
+        for (auto& b : it->second) {
+            if (b->boneTag == tag) return b.get();
+        }
+        return nullptr;
+    };
+
+    auto applyBulletToBone = [&](int tag, bool applyRotation) {
+        auto* b = findBoneData(tag);
+        if (!b || !b->isActive || !b->rigidBody) return;
+
+        const btTransform worldTF = b->rigidBody->getWorldTransform();
+        const btVector3 btPos = worldTF.getOrigin();
+        const btMatrix3x3 btRot = worldTF.getBasis();
+
+        std::cout << "WorldTF Data : " << std::endl;
+        float mat[16];
+        worldTF.getOpenGLMatrix(mat);
+        for(int i = 0; i < 4; ++i) {
+            std::cout << mat[i*4] << ", " << mat[i*4 + 1] << ", " << mat[i*4 + 2] << ", " << mat[i*4 + 3] << std::endl;
+        }
+
+        assert(btPos.x() == mat[12] && btPos.y() == mat[13] && btPos.z() == mat[14]);
+        
+        RwMatrix* boneMtx = BoneHelper::GetBoneRwMatrix(ped, tag);
+        if (!boneMtx) {
+            std::cout << "Failed to get bone matrix for tag " << tag << std::endl;
+            return;
+        }
+
+        std::cout << "Original Bone Matrix for tag " << tag << ": [" <<
+            boneMtx->right.x << "," << boneMtx->right.y << "," << boneMtx->right.z << "; " <<
+            boneMtx->up.x    << "," << boneMtx->up.y    << "," << boneMtx->up.z    << "; " <<
+            boneMtx->at.x    << "," << boneMtx->at.y    << "," << boneMtx->at.z    << "; " <<
+            boneMtx->pos.x   << "," << boneMtx->pos.y   << "," << boneMtx->pos.z   << "]" << std::endl;
+
+        std::cout << "Applying Bullet position to bone tag " << tag << ": (" << btPos.x() << ", " << btPos.y() << ", " << btPos.z() << ")" << std::endl;
+        std::cout << "Bullet rotation basis for bone tag " << tag << ": [" <<
+            btRot.getRow(0).x() << "," << btRot.getRow(0).y() << "," << btRot.getRow(0).z() << "; " <<
+            btRot.getRow(1).x() << "," << btRot.getRow(1).y() << "," << btRot.getRow(1).z() << "; " <<
+            btRot.getRow(2).x() << "," << btRot.getRow(2).y() << "," << btRot.getRow(2).z() << "]" << std::endl;
+        
+        // RwMatrix originalBoneMtx = *boneMtx; // Store original GTA bone matrix
+        // RwMatrix bulletBoneMtx;
+        // glMatrixToRwMatrix(mat, bulletBoneMtx);
+
+        // assert(btPos.x() == bulletBoneMtx.pos.x && btPos.y() == bulletBoneMtx.pos.y && btPos.z() == bulletBoneMtx.pos.z, "Bullet position does not match custom matrix translation!");
+
+        // boneMtx->right = bulletBoneMtx.right;
+        // boneMtx->up    = bulletBoneMtx.up;
+        // boneMtx->at    = bulletBoneMtx.at;
+        // boneMtx->pos   = bulletBoneMtx.pos;
+
+        // Semua Rotasi GTA Itu 0, 0, 0 Di Frame Awal (Pose T), Jadi Kita Hitung Delta Rotasi Dari Pose Tersebut, Lalu Terapkan Delta Itu Ke Pose GTA Awal, Baru Kita Dapat Rotasi GTA Yang Benar Sesuai Rotasi Bullet Saat Ini. Dengan Cara Ini, Kita Bisa Mempertahankan Pose Awal GTA Sambil Tetap Sinkron Dengan Rotasi Bullet.
+        
+        // if (b->hasInitPose && clumpData && b->boneIndex >= 0) {
+        //     btQuaternion bulletLocalQuat = btQuat;
+        //     if (b->parentTag >= 0) {
+        //         auto* parentData = findBoneData(b->parentTag);
+        //         if (parentData && parentData->isActive && parentData->rigidBody) {
+        //             const btQuaternion parentWorldQuat = parentData->rigidBody->getWorldTransform().getRotation();
+        //             bulletLocalQuat = parentWorldQuat.inverse() * btQuat;
+        //         }
+        //     }
+        //     bulletLocalQuat.normalize();
+
+        //     btQuaternion deltaQuat = bulletLocalQuat * b->initBulletLocalQuat.inverse();
+        //     deltaQuat.normalize();
+
+        //     btQuaternion correctedGtaQuat = deltaQuat * b->initGtaQuat;
+        //     correctedGtaQuat.normalize();
+
+        //     auto* frameData = &clumpData->m_pFrames[b->boneIndex];
+        //     if (frameData && frameData->m_pIFrame) {
+        //         auto* frame = reinterpret_cast<RpHAnimBlendInterpFrame*>(frameData->m_pIFrame);
+        //         frame->orientation = BtQuatToRtQuat(correctedGtaQuat);
+        //     }
+        // }
+
+    //     //BoneHelper::SetBoneRWMatrix(ped, tag, boneMtx);
+        std::cout << "Setting bone position for tag " << tag << " to Bullet position: (" << btPos.x() << ", " << btPos.y() << ", " << btPos.z() << ")" << std::endl;
+        BoneHelper::SetBonePosition(ped, tag, { btPos.x(), btPos.y(), btPos.z() });
+
+    //     // std::cout << "Bone Matrix Data for tag " << tag << ": " << std::endl;
+    //     // std::cout << "BoneMTX : " << boneMtx.right.x << ", " << boneMtx.right.y << ", " << boneMtx.right.z << std::endl;
+    //     // std::cout << "          " << boneMtx.up.x << ", " << boneMtx.up.y << ", " << boneMtx.up.z << std::endl;
+    //     // std::cout << "          " << boneMtx.at.x << ", " << boneMtx.at.y << ", " << boneMtx.at.z << std::endl;
+    //     // std::cout << "          " << boneMtx.pos.x << ", " << boneMtx.pos.y << ", " << boneMtx.pos.z << std::endl;
+
+    //     RwV3d bonePos = { btPos.x(), btPos.y(), btPos.z() };
+    //     BoneHelper::SetBonePosition(ped, tag, bonePos);
+
+    //     // RtQuat rtQuat;
+    //     // rtQuat.imag.x = btQuat.x();
+    //     // rtQuat.imag.y = btQuat.y();
+    //     // rtQuat.imag.z = btQuat.z();
+    //     // rtQuat.real   = btQuat.w();
+
+    //     // RwV3d angles = {0.0f, 0.0f, 0.0f};
+    //     // BoneHelper::QuatToEuler(&rtQuat, &angles);
+    //     // if (applyRotation) {
+    //     //     BoneHelper::SetBoneRotation(ped, tag, angles);
+    //     // }
+
+    //     // Head group mapping: apply HEAD to HEAD1/HEAD2 only.
+    //     if (tag == BONE_NECK) {
+    //         BoneHelper::SetBonePosition(ped, BONE_HEAD, bonePos);
+    //         BoneHelper::SetBonePosition(ped, BONE_HEAD1, bonePos);
+    //         BoneHelper::SetBonePosition(ped, BONE_HEAD2, bonePos);
+    //     }
+
+    //     if (tag == BONE_PELVIS) {
+    //         bonePos.y += 0.12f; // GTA has an extra pelvis bone (PELVIS1) above the main pelvis, so we need to offset the position up to match that.
+    //         BoneHelper::SetBonePosition(ped, BONE_PELVIS1, bonePos);
+    //     }
+
+    //     if (tag == BONE_LEFTHAND) {
+    //         BoneHelper::SetBonePosition(ped, BONE_LEFTTHUMB, bonePos);
+    //         BoneHelper::SetBoneRotation(ped, BONE_LEFTTHUMB, {0.0f, 0.0f, 0.0f}); // Reset GTA Euler overrides for thumb (prevents weird twisting). We will still apply Bullet rotation via RWMatrix, so the thumb will follow the hand properly, just without the extra GTA Euler rotation.
+    //     }
+
+    //     if (tag == BONE_RIGHTHAND) {
+    //         BoneHelper::SetBonePosition(ped, BONE_RIGHTTHUMB, bonePos);
+    //         BoneHelper::SetBoneRotation(ped, BONE_RIGHTTHUMB, {0.0f, 0.0f, 0.0f}); // Reset GTA Euler overrides for thumb (prevents weird twisting). We will still apply Bullet rotation via RWMatrix, so the thumb will follow the hand properly, just without the extra GTA Euler rotation.
+    //     }
+    };
+
+    for (auto& b : it->second) {
+        applyBulletToBone(b->boneTag, true);
+    }
 }
 
 // ============================================================
@@ -649,7 +780,8 @@ void BoneNodePhysics::SyncBulletToBoneHelperRender(CPed* ped) {
 //  Called from pedRenderEvent.before — overwrites GTA skinning
 //  matrices with Bullet world-space transforms just before render.
 // ============================================================
-void BoneNodePhysics::WriteBulletMatricesToHierarchy(CPed* ped, RpHAnimHierarchy* /*hier*/, RwMatrix* matrices) {
+
+void BoneNodePhysics::WriteBulletMatricesToHierarchy(CPed* ped, RpHAnimHierarchy* hier, RwMatrix* matrices) {
     auto it = s_PedBones.find(ped);
     if (it == s_PedBones.end()) return;
 
@@ -657,9 +789,38 @@ void BoneNodePhysics::WriteBulletMatricesToHierarchy(CPed* ped, RpHAnimHierarchy
         if (!b->isActive || !b->rigidBody) continue;
         if (b->boneIndex < 0) continue;
 
-        // Write Bullet world-space transforms directly (hierarchy matrices are world-space)
-        BtTransformToRwMatrix(b->rigidBody->getWorldTransform(), matrices[b->boneIndex]);
+        // 1. Ambil Transform dari Bullet
+        const btTransform& worldTF = b->rigidBody->getWorldTransform();
+        const btQuaternion& bq = worldTF.getRotation();
+        const btVector3& bPos = worldTF.getOrigin();
+
+        // 2. Bungkus RwMatrix bone ke dalam CMatrix (false = jangan destroy saat destruktor)
+        CMatrix boneMat(&matrices[b->boneIndex], false);
+
+        // 3. Simpan skala asli sebelum di-overwrite (PENTING!)
+        // CMatrix::SetRotate biasanya mereset skala ke 1.0
+        float sX = CVector(matrices[b->boneIndex].right).Magnitude();
+        float sY = CVector(matrices[b->boneIndex].up).Magnitude();
+        float sZ = CVector(matrices[b->boneIndex].at).Magnitude();
+
+        // 4. Konversi btQuaternion ke CQuaternion
+        CQuaternion gq;
+        gq.real = bq.getW();
+        gq.imag = { (float)bq.getX(), (float)bq.getY(), (float)bq.getZ() };
+
+        // 5. Apply Rotasi & Posisi menggunakan fungsi internal GTA
+        boneMat.SetRotate(gq); 
+        boneMat.SetTranslateOnly(bPos.x(), bPos.y(), bPos.z());
+
+        // 6. Kembalikan Skala (jika karakter jadi gepeng/aneh, bagian ini kuncinya)
+        CallMethod<0x5A2E60, CMatrix *> (&boneMat, sX, sY, sZ);
+
+        // 7. Update data ke RwMatrix internal
+        boneMat.UpdateRW(); 
     }
+
+    // Update seluruh hierarki setelah semua bone selesai di-set
+    RpHAnimHierarchyUpdateMatrices(hier);
 }
 
 // ============================================================
@@ -859,4 +1020,69 @@ void BoneNodePhysics::DrawDebugBoneLines() {
             DrawLineD3D9(dev, sp1.x, sp1.y, sp2.x, sp2.y, 1.0f, color);
         }
     }
+}
+
+void BoneNodePhysics::DrawBoneFromGTAEulerMatrix() {
+        auto* dev = static_cast<IDirect3DDevice9*>(RwD3D9GetCurrentD3DDevice());
+        if (!dev) return;
+    
+        for (auto& [ped, bones] : s_PedBones) {
+            if (!ped) continue;
+
+            RpHAnimHierarchy* hier = GetAnimHierarchyFromSkinClump(ped->m_pRwClump);
+            if (!hier) return;
+
+            RwMatrix* matrices = RpHAnimHierarchyGetMatrixArray(hier);
+            if (!matrices) return;
+    
+            auto findBone = [&](int tag) -> BonePhysicsData* {
+                for (auto& b : bones)
+                    if (b->boneTag == tag) return b.get();
+                return nullptr;
+            };
+
+            if(auto* head = findBone(BONE_HEAD); head && head->boneIndex >= 0) {
+                RwMatrix gtaMtx = matrices[head->boneIndex];
+                RwV3d headPos = gtaMtx.pos;
+                RwV3d headSp = {0};
+                float w, h;
+                if (CSprite::CalcScreenCoors(headPos, &headSp, &w, &h, true, true)) {
+                    float radius = std::clamp(h * 0.18f, 5.0f, 28.0f);
+                    DrawCircleD3D9(dev, headSp.x, headSp.y, radius, D3DCOLOR_ARGB(255, 255, 255, 255), 24);
+                }   
+            }
+/*
+            for (auto& b : bones) {
+                if (b->boneIndex < 0) continue;
+
+                RwMatrix gtaMtx = matrices[b->boneIndex]; // This matrix is built from GTA's Euler angles.
+                RwV3d bonePos = gtaMtx.pos;
+                RwV3d boneRight = gtaMtx.right;
+                RwV3d boneUp = gtaMtx.up;
+                RwV3d boneAt = gtaMtx.at;
+
+                RwV3d boneSp = {0};
+                float w, h;
+                // Draw Line not circle for non-head bones, to differentiate from Bullet positions.
+                if (CSprite::CalcScreenCoors(bonePos, &boneSp, &w, &h, true, true)) {
+                    DrawLineD3D9(dev, boneSp.x - 4, boneSp.y, boneSp.x + 4, boneSp.y, 1.0f, D3DCOLOR_ARGB(255, 255, 255, 255));
+                    DrawLineD3D9(dev, boneSp.x, boneSp.y - 4, boneSp.x, boneSp.y + 4, 1.0f, D3DCOLOR_ARGB(255, 255, 255, 255));
+                }
+                
+                // Draw the local axes from GTA's Euler-based matrix for debugging.
+                CVector rightEnd = bonePos + boneRight * 0.1f;
+                CVector upEnd = bonePos + boneUp * 0.1f;
+                CVector atEnd = bonePos + boneAt * 0.1f;
+
+                RwV3d rightEndSp = {0}, upEndSp = {0}, atEndSp = {0};
+                if (CSprite::CalcScreenCoors(rightEnd, &rightEndSp, &w, &h, true, true) &&
+                    CSprite::CalcScreenCoors(upEnd, &upEndSp, &w, &h, true, true) &&
+                    CSprite::CalcScreenCoors(atEnd, &atEndSp, &w, &h, true, true)) {
+                    DrawLineD3D9(dev, boneSp.x, boneSp.y, rightEndSp.x, rightEndSp.y, 1.0f, D3DCOLOR_ARGB(255, 255, 0, 0)); // Red = Right
+                    DrawLineD3D9(dev, boneSp.x, boneSp.y, upEndSp.x, upEndSp.y, 1.0f, D3DCOLOR_ARGB(255, 255, 0, 255)); // Magenta = Up
+                    DrawLineD3D9(dev, boneSp.x, boneSp.y, atEndSp.x, atEndSp.y, 1.0f, D3DCOLOR_ARGB(255, 255, 0, 255)); // Cyan = At (forward)
+                }
+                
+            }*/
+        }
 }

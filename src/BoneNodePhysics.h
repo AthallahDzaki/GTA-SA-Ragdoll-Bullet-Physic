@@ -65,6 +65,7 @@ public:
 
     // Draw 3D debug lines connecting parent/child bones (skeleton wireframe)
     static void DrawDebugBoneLines();
+    static void DrawBoneFromGTAEulerMatrix();
 
     // Called from pedRenderEvent.before — writes Bullet world transforms directly
     // into the RpHAnim skinning matrix array, overriding GTA's animation pose.

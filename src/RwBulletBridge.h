@@ -11,16 +11,17 @@
 // RW's right/at/up are COLUMN vectors (basis axes). To place them as columns
 // in btMatrix3x3, each row becomes (right[i], at[i], up[i]).
 
-// struct RwMatrix
+// struct RwMatrixTag
 // {
-//     RwV3d        right;
-//     unsigned int flags;
-//     RwV3d        up;
-//     unsigned int pad1;
-//     RwV3d        at;
-//     unsigned int pad2;
-//     RwV3d        pos;
-//     unsigned int pad3;
+//     /* These are padded to be 16 byte quantities per line */
+//     RwV3d               right;
+//     RwUInt32            flags;
+//     RwV3d               up;
+//     RwUInt32            pad1;
+//     RwV3d               at;
+//     RwUInt32            pad2;
+//     RwV3d               pos;
+//     RwUInt32            pad3;
 // };
 
 inline btTransform RwMatrixToBtTransform(const RwMatrix& m) {
@@ -40,11 +41,20 @@ inline void BtTransformToRwMatrix(const btTransform& t, RwMatrix& m) {
     const btMatrix3x3& b = t.getBasis();
     const btVector3&   p = t.getOrigin();
 
-    // Reverse: extract columns from basis rows
-    m.right.x = b[0][0]; m.at.x = b[0][1]; m.up.x = b[0][2];
-    m.right.y = b[1][0]; m.at.y = b[1][1]; m.up.y = b[1][2];
-    m.right.z = b[2][0]; m.at.z = b[2][1]; m.up.z = b[2][2];
+
 
     m.pos.x = p.x(); m.pos.y = p.y(); m.pos.z = p.z();
     m.flags  = 0;
+}
+
+inline void glMatrixToRwMatrix(const float* glMat, RwMatrix& rwMat) {
+    // -0.605069, -0.796173, 5.84424e-05, 0
+    // -4.21107e-05, -4.13656e-05, -1, 0
+    // 0.796173, -0.605069, -8.46386e-06, 0
+    // 2510.75, -1660.86, 12.6074, 1
+    rwMat.right.x = glMat[0]; rwMat.at.x = glMat[1]; rwMat.up.x = glMat[2];
+    rwMat.right.y = glMat[4]; rwMat.at.y = glMat[5]; rwMat.up.y = glMat[6];
+    rwMat.right.z = glMat[8]; rwMat.at.z = glMat[9]; rwMat.up.z = glMat[10];
+
+    // glMat[3], glMat[7], glMat[11] are just padding for OpenGL's column-major format, so we ignore them.
 }
